@@ -21,3 +21,6 @@ release.properties
 *.class
 *.jar
 *.log
+
+# Data
+routes
