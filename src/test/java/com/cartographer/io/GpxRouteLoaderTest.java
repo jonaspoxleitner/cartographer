@@ -39,7 +39,6 @@ class GpxRouteLoaderTest {
         assertEquals("Start", route.getWaypoints().get(0).getName());
         assertEquals(3, route.getNodes().size());
         assertEquals(715.9, route.getNodes().get(0).getElevation(), 0.001);
-        assertTrue(route.totalDistanceMeters() > 0);
     }
 
     @Test

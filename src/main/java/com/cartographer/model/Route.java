@@ -37,25 +37,13 @@ public class Route {
         waypoints.add(waypoint);
     }
 
-    /**
-     * The ordered track nodes forming the path (modifiable so the
-     * map/graph builder can snap or merge nodes later).
-     */
+    /** The ordered track nodes forming the path. */
     public List<Node> getNodes() {
         return nodes;
     }
 
     public List<Node> getWaypoints() {
         return Collections.unmodifiableList(waypoints);
-    }
-
-    /** Total length of the path in meters. */
-    public double totalDistanceMeters() {
-        double total = 0;
-        for (int i = 1; i < nodes.size(); i++) {
-            total += nodes.get(i - 1).distanceTo(nodes.get(i));
-        }
-        return total;
     }
 
     @Override
