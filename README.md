@@ -10,13 +10,19 @@ A Java 21 project built with Maven.
 ## Build
 
 ```bash
-mvn package
+make package   # or: mvn package
 ```
 
 ## Run
 
 ```bash
-java -jar target/cartographer-1.0-SNAPSHOT.jar
+make run       # builds the package and runs the jar
+```
+
+## Clean
+
+```bash
+make clean     # or: mvn clean
 ```
 
 ## Test
