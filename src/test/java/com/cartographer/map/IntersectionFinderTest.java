@@ -75,6 +75,16 @@ class IntersectionFinderTest {
     }
 
     @Test
+    void findsEastWestClosePointsAcrossGridCells() {
+        // 9 m apart almost purely east-west at lat 48: more than one grid
+        // cell of longitude, because a longitude degree shrinks with latitude
+        Route a = route(new Node(48.600756, 13.790176));
+        Route b = route(new Node(48.600772, 13.790302));
+
+        assertEquals(1, new IntersectionFinder(10).find(List.of(a, b)).size());
+    }
+
+    @Test
     void clustersChainedNearbyPoints() {
         Route a = route(new Node(48.0, 13.0), new Node(48.0, 13.00008));
         Route b = route(new Node(48.0, 13.00004), new Node(48.0, 13.0001));

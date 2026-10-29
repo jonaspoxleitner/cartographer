@@ -50,10 +50,13 @@ mvn test
 ## How it works
 
 1. `GpxRouteLoader` parses GPX 1.x files into `Route` objects (ordered track
-   `Node`s plus named waypoints) using the JDK's built-in XML parser.
+   `Node`s plus named waypoints) using the JDK's built-in XML parser. Files
+   are parsed in parallel (one loader per file, encounter order preserved).
 2. `IntersectionFinder` clusters track points within 10 m of each other into
    intersections — across routes, and optionally within one route
-   (self-crossings and out-and-back strands).
+   (self-crossings and out-and-back strands). Candidate pairs come from a
+   spatial grid (near-linear instead of O(points²)) and the search runs in
+   parallel per track point, so adding GPX files scales well.
 3. `GraphBuilder` merges everything into a `RouteGraph`: intersections become
    junction vertices, route stretches between junctions become `GraphEdge`s,
    and sparse routes are cut at junctions they merely pass near (point-to-

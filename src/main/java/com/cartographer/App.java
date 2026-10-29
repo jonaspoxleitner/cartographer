@@ -12,10 +12,10 @@ import com.cartographer.ui.SvgGraphRenderer;
 import com.cartographer.ui.TextGraphRenderer;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Stream;
 
@@ -54,17 +54,26 @@ public class App {
     }
 
     private static List<Route> loadRoutes(String[] args) throws IOException {
-        GpxRouteLoader loader = new GpxRouteLoader();
-        List<Route> routes = new ArrayList<>();
-        for (Path gpxFile : resolveGpxFiles(args)) {
-            routes.add(loader.load(gpxFile));
-            Node start = routes.get(routes.size() - 1).getNodes().get(0);
+        List<Path> gpxFiles = resolveGpxFiles(args);
+        // one loader per file: XML builders are single-threaded, so parsing
+        // maps cleanly onto parallel tasks (encounter order is preserved)
+        List<Route> routes = gpxFiles.parallelStream().map(App::loadRoute).toList();
+        for (int i = 0; i < routes.size(); i++) {
+            Route route = routes.get(i);
+            Node start = route.getNodes().get(0);
             System.out.printf("%s: %d nodes, starting at (%.6f, %.6f)%n",
-                    gpxFile.getFileName(),
-                    routes.get(routes.size() - 1).getNodes().size(),
+                    gpxFiles.get(i).getFileName(), route.getNodes().size(),
                     start.getLatitude(), start.getLongitude());
         }
         return routes;
+    }
+
+    private static Route loadRoute(Path gpxFile) {
+        try {
+            return new GpxRouteLoader().load(gpxFile);
+        } catch (IOException ioException) {
+            throw new UncheckedIOException("failed to parse " + gpxFile, ioException);
+        }
     }
 
     private static List<Path> resolveGpxFiles(String[] args) throws IOException {
