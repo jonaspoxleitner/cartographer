@@ -4,6 +4,7 @@ import com.cartographer.map.GraphEdge;
 import com.cartographer.map.GraphNode;
 import com.cartographer.map.RouteGraph;
 import com.cartographer.model.Node;
+import org.springframework.stereotype.Component;
 
 import java.util.List;
 import java.util.Locale;
@@ -14,6 +15,7 @@ import java.util.Locale;
  * drawn wider and highlighted, junctions as red labeled dots and
  * endpoints as small gray dots.
  */
+@Component
 public class SvgGraphRenderer {
 
     private static final double WIDTH = 1000;

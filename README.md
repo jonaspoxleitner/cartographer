@@ -35,6 +35,22 @@ Sections (* = shared, from one junction/start to the next):
   ...
 ```
 
+## Configuration
+
+The pipeline settings live in `src/main/resources/application.properties`, which
+is bundled into the jar:
+
+| Property | Default | Meaning |
+| --- | --- | --- |
+| `cartographer.intersection-tolerance-meters` | `10.0` | two tracks cross when they pass within this many meters of each other |
+| `cartographer.routes-dir` | `routes` | directory scanned for `.gpx` files when none are passed on the command line |
+| `cartographer.svg-output` | `graph.svg` | where the SVG map is written |
+
+Passing `.gpx` files on the command line bypasses `routes-dir`. The properties
+are read from the classpath inside the jar, so edit the file and run
+`make package` (or `mvn package`) to apply a change; a file of the same name in
+the working directory is not picked up.
+
 ## Clean
 
 ```bash
@@ -52,8 +68,9 @@ mvn test
 1. `GpxRouteLoader` parses GPX 1.x files into `Route` objects (ordered track
    `Node`s plus named waypoints) using the JDK's built-in XML parser. Files
    are parsed in parallel (one loader per file, encounter order preserved).
-2. `IntersectionFinder` clusters track points within 10 m of each other into
-   intersections — across routes, and optionally within one route
+2. `IntersectionFinder` clusters track points within the configured tolerance
+   (10 m by default) of each other into intersections — across routes, and
+   optionally within one route
    (self-crossings and out-and-back strands). Candidate pairs come from a
    spatial grid (near-linear instead of O(points²)) and the search runs in
    parallel per track point, so adding GPX files scales well.
@@ -73,14 +90,16 @@ mvn test
 ## Project layout
 
 ```
-src/main/java/com/cartographer/        # App entry point
-src/main/java/com/cartographer/model/  # Node, Route
-src/main/java/com/cartographer/io/     # GpxRouteLoader
-src/main/java/com/cartographer/map/    # RouteGraph, GraphNode/Edge,
-                                       # IntersectionFinder, GraphBuilder
-src/main/java/com/cartographer/ui/     # TextGraphRenderer, SvgGraphRenderer
-src/test/java/com/cartographer/        # JUnit 5 tests
-routes/                                # sample GPX files (git-ignored)
+src/main/java/com/cartographer/            # App entry point, CartographerRunner
+src/main/java/com/cartographer/config/     # AppConfig, CartographerProperties
+src/main/java/com/cartographer/model/      # Node, Route
+src/main/java/com/cartographer/io/         # GpxRouteLoader
+src/main/java/com/cartographer/map/        # RouteGraph, GraphNode/Edge,
+                                           # IntersectionFinder, GraphBuilder
+src/main/java/com/cartographer/ui/         # TextGraphRenderer, SvgGraphRenderer
+src/main/resources/application.properties  # pipeline settings
+src/test/java/com/cartographer/            # JUnit 5 tests
+routes/                                    # sample GPX files (git-ignored)
 ```
 
 ## Roadmap

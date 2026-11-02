@@ -12,6 +12,7 @@
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <maven.compiler.release>21</maven.compiler.release>
+    <spring.version>6.2.11</spring.version>
   </properties>
 
   <dependencyManagement>
@@ -27,6 +28,19 @@
   </dependencyManagement>
 
   <dependencies>
+    <!-- Spring Framework IoC container; spring-core/spring-beans come transitively -->
+    <dependency>
+      <groupId>org.springframework</groupId>
+      <artifactId>spring-context</artifactId>
+      <version>${spring.version}</version>
+    </dependency>
+    <!-- Spring TestContext framework for the application-context smoke test -->
+    <dependency>
+      <groupId>org.springframework</groupId>
+      <artifactId>spring-test</artifactId>
+      <version>${spring.version}</version>
+      <scope>test</scope>
+    </dependency>
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter-api</artifactId>
@@ -45,12 +59,32 @@
       <plugin>
         <artifactId>maven-jar-plugin</artifactId>
         <configuration>
+          <!-- rebuild every time, so shade never shades an already-shaded jar -->
+          <forceCreation>true</forceCreation>
           <archive>
             <manifest>
               <mainClass>com.cartographer.App</mainClass>
             </manifest>
           </archive>
         </configuration>
+      </plugin>
+      <plugin>
+        <artifactId>maven-shade-plugin</artifactId>
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals>
+              <goal>shade</goal>
+            </goals>
+            <configuration>
+              <transformers>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                  <mainClass>com.cartographer.App</mainClass>
+                </transformer>
+              </transformers>
+            </configuration>
+          </execution>
+        </executions>
       </plugin>
     </plugins>
     <pluginManagement><!-- lock down plugins versions to avoid using Maven defaults (may be moved to parent pom) -->
@@ -76,6 +110,11 @@
         <plugin>
           <artifactId>maven-jar-plugin</artifactId>
           <version>3.4.2</version>
+        </plugin>
+        <!-- keeps `java -jar target/...jar` working now that the CLI needs Spring on its classpath -->
+        <plugin>
+          <artifactId>maven-shade-plugin</artifactId>
+          <version>3.6.0</version>
         </plugin>
         <plugin>
           <artifactId>maven-install-plugin</artifactId>

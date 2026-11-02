@@ -3,6 +3,7 @@ package com.cartographer.ui;
 import com.cartographer.map.GraphEdge;
 import com.cartographer.map.GraphNode;
 import com.cartographer.map.RouteGraph;
+import org.springframework.stereotype.Component;
 
 import java.util.Comparator;
 import java.util.IdentityHashMap;
@@ -15,6 +16,7 @@ import java.util.Map;
  * (from one junction/start to the next), and finally a full
  * adjacency list. Shared sections are marked '*'.
  */
+@Component
 public class TextGraphRenderer {
 
     public String render(RouteGraph graph) {

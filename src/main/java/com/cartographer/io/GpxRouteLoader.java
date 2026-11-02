@@ -2,6 +2,7 @@ package com.cartographer.io;
 
 import com.cartographer.model.Node;
 import com.cartographer.model.Route;
+import org.springframework.stereotype.Component;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.NodeList;
@@ -17,6 +18,7 @@ import java.nio.file.Path;
  * Track points (trkpt) become the route's path nodes,
  * waypoints (wpt) become named waypoints.
  */
+@Component
 public class GpxRouteLoader {
 
     public Route load(Path gpxFile) throws IOException {
