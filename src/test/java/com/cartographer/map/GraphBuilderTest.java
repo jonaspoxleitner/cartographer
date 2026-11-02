@@ -283,6 +283,60 @@ class GraphBuilderTest {
     }
 
     @Test
+    void denseOutAndBackBecomesOneSharedCorridorEdge() {
+        // a time-dense out-and-back walk: ~185 m spur K->S, corridor S->T
+        // sampled every ~1 m, a ~60 m turnaround excursion past T, the same
+        // corridor back, then a ~185 m spur S->L. Both legs stay within
+        // tolerance along the whole street, so they chain into one cluster
+        // that the corridor-end junctions cut apart: the two legs must merge
+        // into a single edge traveled twice, the street counted once.
+        Route walk = route(denseOutAndBackNodes().toArray(new Node[0]));
+
+        List<Intersection> intersections =
+                new IntersectionFinder(TOLERANCE).findWithSelfIntersections(List.of(walk));
+        RouteGraph graph = new GraphBuilder(TOLERANCE)
+                .simplify(new GraphBuilder(TOLERANCE).build(List.of(walk), intersections));
+
+        // spur K->S, corridor, turnaround stub, spur S->L: no second street
+        List<GraphEdge> shared = graph.getEdges().stream().filter(GraphEdge::isShared).toList();
+        assertEquals(1, shared.size(), () -> "edges: " + graph.getEdges());
+        assertEquals(4, graph.getEdges().size(), () -> "edges: " + graph.getEdges());
+        assertEquals(2, shared.get(0).getTraversals());
+        assertEquals(1, shared.get(0).getRoutes().size());
+        // one pass over the 100 m street, extended by the legs that chain
+        // around the turnaround, not the two legs' 200 m side by side
+        assertEquals(127, shared.get(0).getLengthMeters(), 5,
+                () -> "one street length, not two: " + shared.get(0));
+        // 176 m spur + 127 m corridor + 76 m turnaround stub + 174 m spur
+        assertEquals(553, graph.totalLengthMeters(), 15,
+                () -> "street counted twice: " + graph.getEdges());
+    }
+
+    /** Spur K->S, corridor S->T and back, spur S->L; ~1 m between points. */
+    private List<Node> denseOutAndBackNodes() {
+        List<Node> nodes = new ArrayList<>();
+        for (int i = 0; i <= 185; i++) {
+            nodes.add(new Node(48.6000, 13.7000 + i * 0.0000135));
+        }
+        for (int i = 1; i <= 100; i++) {
+            nodes.add(new Node(48.6000 + i * 0.000009, 13.7025));
+        }
+        for (int i = 1; i <= 60; i++) { // ~60 m excursion east of T
+            nodes.add(new Node(48.6009, 13.7025 + i * 0.0000135));
+        }
+        for (int i = 59; i >= 0; i--) {
+            nodes.add(new Node(48.6009, 13.7025 + i * 0.0000135));
+        }
+        for (int i = 1; i <= 100; i++) {
+            nodes.add(new Node(48.6009 - i * 0.000009, 13.70255));
+        }
+        for (int i = 1; i <= 185; i++) {
+            nodes.add(new Node(48.6000, 13.7025 + i * 0.0000135));
+        }
+        return nodes;
+    }
+
+    @Test
     void clusterNoiseDoesNotCreateDegenerateEdges() {
         // several adjacent b-points sit inside the same junction tolerance
         Route a = route(

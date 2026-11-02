@@ -73,7 +73,11 @@ mvn test
    optionally within one route
    (self-crossings and out-and-back strands). Candidate pairs come from a
    spatial grid (near-linear instead of O(points²)) and the search runs in
-   parallel per track point, so adding GPX files scales well.
+   parallel per track point, so adding GPX files scales well. A dense
+   out-and-back walk chains into one street-length cluster; when it splits
+   into two passes that meet at both ends, the corridor's ends become
+   junctions instead of dropping the cluster, so the graph merges the two
+   legs into one street.
 3. `GraphBuilder` merges everything into a `RouteGraph`: intersections become
    junction vertices, route stretches between junctions become `GraphEdge`s,
    and sparse routes are cut at junctions they merely pass near (point-to-
