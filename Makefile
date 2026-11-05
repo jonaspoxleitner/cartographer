@@ -1,4 +1,4 @@
-JAR = target/cartographer-1.0-SNAPSHOT.jar
+JAR = cartographer-cli/target/cartographer-cli-1.0-SNAPSHOT.jar
 
 .PHONY: run package clean
 

@@ -11,6 +11,11 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class GpxRouteLoaderTest {
 
+    // GPX samples live at the repository root, while surefire runs with the
+    // module as working directory. Fall back to "." so IDE runs from the root work.
+    private static final Path ROUTES_DIR = Path.of(
+            System.getProperty("maven.multiModuleProjectDirectory", "."), "routes");
+
     private static final String MINIMAL_GPX = """
             <?xml version="1.0" encoding="UTF-8"?>
             <gpx version="1.1" creator="test" xmlns="http://www.topografix.com/GPX/1/1">
@@ -43,7 +48,7 @@ class GpxRouteLoaderTest {
 
     @Test
     void loadsSampleRouteFromDisk() throws Exception {
-        Route route = new GpxRouteLoader().load(Path.of("routes", "komoot-4321335.gpx"));
+        Route route = new GpxRouteLoader().load(ROUTES_DIR.resolve("komoot-4321335.gpx"));
 
         assertNotNull(route.getName());
         assertEquals(7, route.getWaypoints().size());
@@ -53,6 +58,6 @@ class GpxRouteLoaderTest {
     @Test
     void missingFileThrows() {
         assertThrows(Exception.class,
-                () -> new GpxRouteLoader().load(Path.of("routes", "does-not-exist.gpx")));
+                () -> new GpxRouteLoader().load(ROUTES_DIR.resolve("does-not-exist.gpx")));
     }
 }

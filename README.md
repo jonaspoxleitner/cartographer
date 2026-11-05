@@ -1,6 +1,6 @@
 # cartographer
 
-Loads GPX routes and merges them into a single route graph, with pathfinding between routes as the end goal. A Java 21 project built with Maven.
+Loads GPX routes and merges them into a single route graph, with pathfinding between routes as the end goal. A Java 21 Maven multi-module project: the pipeline lives in `cartographer-core`, the command-line frontend in `cartographer-cli`, and a Spring Boot server frontend in `cartographer-server`.
 
 ## Requirements
 
@@ -17,7 +17,7 @@ make package   # or: mvn package
 
 ```bash
 make run                                            # builds, loads all routes in routes/, prints the graph
-java -jar target/cartographer-1.0-SNAPSHOT.jar foo.gpx ...   # or pass specific GPX files
+java -jar cartographer-cli/target/cartographer-cli-1.0-SNAPSHOT.jar foo.gpx ...   # or pass specific GPX files
 ```
 
 The program prints route info, graph stats, and the merged graph as a vertex table plus section and adjacency lists, and writes an SVG map to `graph.svg`:
@@ -35,7 +35,7 @@ Sections (* = shared, from one junction/start to the next):
 
 ## Configuration
 
-The pipeline settings live in `src/main/resources/application.properties`, which is bundled into the jar:
+The pipeline settings live in `cartographer-cli/src/main/resources/application.properties`, which is bundled into the CLI jar:
 
 | Property | Default | Meaning |
 | --- | --- | --- |
@@ -68,24 +68,20 @@ mvn test
 ## Project layout
 
 ```
-src/main/java/com/cartographer/            # App entry point, CartographerRunner
-src/main/java/com/cartographer/config/     # AppConfig, CartographerProperties
-src/main/java/com/cartographer/model/      # Node, Route
-src/main/java/com/cartographer/io/         # GpxRouteLoader
-src/main/java/com/cartographer/map/        # RouteGraph, GraphNode/Edge,
-                                           # IntersectionFinder, GraphBuilder
-src/main/java/com/cartographer/ui/         # TextGraphRenderer, SvgGraphRenderer
-src/main/resources/application.properties  # pipeline settings
-src/test/java/com/cartographer/            # JUnit 5 tests
-routes/                                    # sample GPX files (git-ignored)
+pom.xml                                        # parent POM: modules, dependency and plugin versions
+cartographer-core/                             # pipeline library, no Spring Boot
+  src/main/java/com/cartographer/model/        # Node, Route
+  src/main/java/com/cartographer/io/           # GpxRouteLoader
+  src/main/java/com/cartographer/map/          # RouteGraph, GraphNode/Edge,
+                                               # IntersectionFinder, GraphBuilder
+  src/main/java/com/cartographer/ui/           # TextGraphRenderer, SvgGraphRenderer
+  src/test/java/com/cartographer/              # JUnit 5 tests
+cartographer-cli/                              # command-line frontend, shaded executable jar
+  src/main/java/com/cartographer/              # App entry point, CartographerRunner
+  src/main/java/com/cartographer/config/       # AppConfig, CartographerProperties
+  src/main/resources/application.properties    # pipeline settings
+  src/test/java/com/cartographer/              # JUnit 5 tests
+cartographer-server/                           # Spring Boot frontend (skeleton)
+  src/main/java/com/cartographer/server/       # ServerApplication
+routes/                                        # sample GPX files (git-ignored)
 ```
-
-## Roadmap
-
-- [x] Load GPX routes into `Node`/`Route` model
-- [x] Find intersections between routes and merge them into one shared graph
-- [x] Normalize the graph (sparse-track snapping, corridor contraction, endpoint/junction fusion)
-- [x] Text visualization (labeled vertices, sections, adjacency list)
-- [x] SVG map export (`graph.svg`)
-- [ ] Pathfinding across the merged route graph (Dijkstra/A*)
-- [ ] Interactive map visualization (e.g. HTML/Leaflet export)
