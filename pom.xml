@@ -20,6 +20,9 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <maven.compiler.release>21</maven.compiler.release>
     <spring-boot.version>3.5.16</spring-boot.version>
+    <!-- The SQLite driver behind MBTiles: the Boot BOM manages the same version,
+         pinned here so a driver upgrade (it bundles native SQLite) is deliberate. -->
+    <sqlite-jdbc.version>3.49.1.0</sqlite-jdbc.version>
   </properties>
 
   <dependencyManagement>

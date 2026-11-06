@@ -3,7 +3,9 @@ package com.cartographer.server.config;
 import com.cartographer.io.GpxRouteLoader;
 import com.cartographer.map.GraphBuilder;
 import com.cartographer.map.IntersectionFinder;
+import com.cartographer.server.tiles.MBTilesStore;
 import com.cartographer.server.tiles.TileBuilder;
+import com.cartographer.server.tiles.TileCache;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -36,5 +38,16 @@ public class ServerConfig {
     @Bean
     public TileBuilder tileBuilder(ServerProperties properties) {
         return new TileBuilder(properties.tileBufferUnits());
+    }
+
+    @Bean
+    public MBTilesStore mbtilesStore(ServerProperties properties) {
+        return new MBTilesStore(properties.mbtilesFile());
+    }
+
+    @Bean
+    public TileCache tileCache(TileBuilder tileBuilder, MBTilesStore mbtilesStore, ServerProperties properties) {
+        return new TileCache(tileBuilder, properties.tileCacheMinZoom(), properties.tileCacheMaxZoom(),
+                mbtilesStore);
     }
 }

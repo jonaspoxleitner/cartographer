@@ -9,6 +9,7 @@ import com.cartographer.model.Route;
 import com.cartographer.server.config.ServerConfig;
 import com.cartographer.server.config.ServerProperties;
 import com.cartographer.server.graph.GraphService;
+import com.cartographer.server.tiles.TileCache;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.AfterAll;
@@ -60,6 +61,8 @@ class GraphControllerTest {
     private static final double TOLERANCE_METERS = 10.0;
     private static final List<String> FIXTURES = List.of("route-a.gpx", "route-b.gpx");
     private static final Path ROUTES_DIR = seedRoutesDir();
+    /** Outside the routes directory: the rebuild writes it, and @BeforeEach clears that directory. */
+    private static final Path TILES_FILE = ROUTES_DIR.resolveSibling("graph-controller-test-tiles.mbtiles");
 
     /** A route far from the fixtures: one more edge, no junctions. */
     private static final String NEW_ROUTE_GPX = """
@@ -87,6 +90,7 @@ class GraphControllerTest {
     static void routesDirectory(DynamicPropertyRegistry registry) {
         registry.add("cartographer.routes-dir", () -> ROUTES_DIR.toString());
         registry.add("cartographer.intersection-tolerance-meters", () -> TOLERANCE_METERS);
+        registry.add("cartographer.mbtiles-file", () -> TILES_FILE.toString());
     }
 
     @BeforeEach
@@ -107,6 +111,7 @@ class GraphControllerTest {
             }
         }
         Files.delete(ROUTES_DIR);
+        Files.deleteIfExists(TILES_FILE);
     }
 
     @Test
@@ -263,8 +268,9 @@ class GraphControllerTest {
 
         @Bean
         GraphService graphService(ServerProperties properties, GpxRouteLoader routeLoader,
-                                  IntersectionFinder intersectionFinder, GraphBuilder graphBuilder) {
-            return new GraphService(properties, routeLoader, intersectionFinder, graphBuilder);
+                                  IntersectionFinder intersectionFinder, GraphBuilder graphBuilder,
+                                  TileCache tileCache) {
+            return new GraphService(properties, routeLoader, intersectionFinder, graphBuilder, tileCache);
         }
     }
 }

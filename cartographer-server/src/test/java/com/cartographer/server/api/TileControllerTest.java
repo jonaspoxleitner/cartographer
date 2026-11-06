@@ -9,6 +9,7 @@ import com.cartographer.server.config.ServerConfig;
 import com.cartographer.server.graph.GraphService;
 import com.cartographer.server.tiles.SlippyMap;
 import com.cartographer.server.tiles.TileBuilder;
+import com.cartographer.server.tiles.TileCache;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wdtinc.mapbox_vector_tile.VectorTile;
@@ -53,7 +54,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * <p>The clipping buffer is set to {@value #CUSTOM_BUFFER_UNITS} here rather
  * than the configured default of 64, so the decoded geometry shows whether the
  * property reached the builder: the edge ends at x = 4096 + 512 instead of
- * x = 4096 + 64.
+ * x = 4096 + 64. The pre-rendered zoom range is this test's single zoom level,
+ * and {@link #useFixtureGraph()} pre-renders the fixture graph, as a rebuild
+ * does.
  */
 @WebMvcTest(TileController.class)
 @Import(ServerConfig.class)
@@ -77,9 +80,14 @@ class TileControllerTest {
     @MockitoBean
     private GraphService graphService;
 
+    @Autowired
+    private TileCache tileCache;
+
     @DynamicPropertySource
     static void tileBuffer(DynamicPropertyRegistry registry) {
         registry.add("cartographer.tile-buffer-units", () -> CUSTOM_BUFFER_UNITS);
+        registry.add("cartographer.tile-cache-min-zoom", () -> ZOOM);
+        registry.add("cartographer.tile-cache-max-zoom", () -> ZOOM);
     }
 
     @Test
@@ -183,6 +191,7 @@ class TileControllerTest {
         graph.addEdge(new GraphEdge(from, to, List.of(start, end), route));
 
         when(graphService.graph()).thenReturn(graph);
+        tileCache.preRender(graph);
         return graph.getEdges().get(0);
     }
 

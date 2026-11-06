@@ -8,6 +8,8 @@ import com.cartographer.map.IntersectionFinder;
 import com.cartographer.map.RouteGraph;
 import com.cartographer.model.Route;
 import com.cartographer.server.config.ServerProperties;
+import com.cartographer.server.tiles.RoutesFingerprint;
+import com.cartographer.server.tiles.TileCache;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -19,6 +21,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
 /**
@@ -26,6 +29,17 @@ import java.util.stream.Stream;
  * directory on startup and rebuilt from scratch after an upload. Readers never
  * see a half-built graph: the reference is swapped, the graph itself is never
  * mutated.
+ *
+ * <p>Every rebuild also brings the {@link TileCache} up to date with the new
+ * graph, so the tile endpoint never encodes a tile on request. The upload
+ * response waits for that, and the graph is published only once its tiles are in
+ * place: under the rebuild lock, readers see the old graph with the old tiles or
+ * the new graph with the new tiles, never a mix of the two.
+ *
+ * <p>When the routes directory and the tile settings are unchanged since the
+ * tiles were last rendered, they are restored from the {@code MBTilesStore}
+ * instead: the graph is still built ({@code /api/graph} needs it, and building
+ * it is cheap compared with rendering), but the pre-render is skipped.
  */
 @Service
 public class GraphService {
@@ -36,15 +50,17 @@ public class GraphService {
     private final GpxRouteLoader routeLoader;
     private final IntersectionFinder intersectionFinder;
     private final GraphBuilder graphBuilder;
+    private final TileCache tileCache;
 
     private volatile RouteGraph graph;
 
     public GraphService(ServerProperties properties, GpxRouteLoader routeLoader,
-                        IntersectionFinder intersectionFinder, GraphBuilder graphBuilder) {
+                        IntersectionFinder intersectionFinder, GraphBuilder graphBuilder, TileCache tileCache) {
         this.properties = properties;
         this.routeLoader = routeLoader;
         this.intersectionFinder = intersectionFinder;
         this.graphBuilder = graphBuilder;
+        this.tileCache = tileCache;
     }
 
     @PostConstruct
@@ -58,20 +74,31 @@ public class GraphService {
     }
 
     /**
-     * Reloads every GPX file in the routes directory and swaps in a freshly
-     * built graph. Synchronized so concurrent rebuilds cannot interleave;
-     * readers keep using the previous graph until the swap.
+     * Reloads every GPX file in the routes directory, swaps in a freshly built
+     * graph and brings the tiles of that graph in place — restored from the store
+     * when it was rendered from exactly these inputs, pre-rendered otherwise.
+     * Synchronized so concurrent rebuilds cannot interleave; readers keep using
+     * the previous graph and the previous tiles until the new pair is ready.
      */
     public synchronized void rebuild() {
+        long startedAtNanos = System.nanoTime();
         Path routesDir = properties.routesDir();
         List<Path> gpxFiles = listGpxFiles(routesDir);
+        String fingerprint = RoutesFingerprint.of(gpxFiles, properties.intersectionToleranceMeters(),
+                properties.tileBufferUnits(), properties.tileCacheMinZoom(), properties.tileCacheMaxZoom());
         // one parse per file: XML builders are single-threaded, so parsing
         // maps cleanly onto parallel tasks (encounter order is preserved)
         List<Route> routes = gpxFiles.parallelStream().map(this::loadRoute).toList();
         List<Intersection> intersections = intersectionFinder.findWithSelfIntersections(routes);
         RouteGraph simplified = graphBuilder.simplify(graphBuilder.build(routes, intersections));
+        long rebuildMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAtNanos);
+        log.info("Loaded {} routes from {} in {} ms", routes.size(), routesDir.toAbsolutePath(), rebuildMillis);
+        // tiles first, then the graph: the new graph must never be visible over the old tiles
+        if (!tileCache.restore(fingerprint)) {
+            tileCache.preRender(simplified);
+            tileCache.persist(fingerprint);
+        }
         this.graph = simplified;
-        log.info("Loaded {} routes from {}", routes.size(), routesDir.toAbsolutePath());
         logGraphStats(simplified);
     }
 

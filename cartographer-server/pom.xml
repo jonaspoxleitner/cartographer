@@ -24,6 +24,13 @@
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-web</artifactId>
     </dependency>
+    <!-- MBTiles is SQLite over plain JDBC: the one runtime dependency the tile
+         cache adds, for keeping the pre-rendered tiles across restarts. -->
+    <dependency>
+      <groupId>org.xerial</groupId>
+      <artifactId>sqlite-jdbc</artifactId>
+      <version>${sqlite-jdbc.version}</version>
+    </dependency>
     <!-- JUnit 5, AssertJ, MockMvc and the Spring test context -->
     <dependency>
       <groupId>org.springframework.boot</groupId>

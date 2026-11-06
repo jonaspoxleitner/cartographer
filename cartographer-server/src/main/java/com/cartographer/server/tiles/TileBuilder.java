@@ -53,6 +53,11 @@ public final class TileBuilder {
         this.bufferUnits = bufferUnits;
     }
 
+    /** The clipping buffer every tile box is widened by, in tile units of {@value SlippyMap#TILE_EXTENT}. */
+    public int bufferUnits() {
+        return bufferUnits;
+    }
+
     /**
      * The tile bytes for {@code x}/{@code y} at {@code zoom}: one feature per
      * visible run of an edge path, or the empty byte array when no edge reaches

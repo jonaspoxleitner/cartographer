@@ -25,3 +25,4 @@ release.properties
 # Data
 routes
 graph.svg
+tiles.mbtiles*
