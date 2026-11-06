@@ -6,6 +6,7 @@ import com.cartographer.map.GraphEdge;
 import com.cartographer.map.IntersectionFinder;
 import com.cartographer.map.RouteGraph;
 import com.cartographer.server.config.ServerProperties;
+import com.cartographer.server.tiles.TileBuilder;
 import org.junit.jupiter.api.Test;
 
 import java.net.URISyntaxException;
@@ -26,7 +27,8 @@ class GraphServiceTest {
     private static final Path ROUTES_DIR = resourcePath("/gpx");
 
     private GraphService serviceWithRoutesDir(Path routesDir) {
-        return new GraphService(new ServerProperties(TOLERANCE_METERS, routesDir),
+        return new GraphService(
+                new ServerProperties(TOLERANCE_METERS, routesDir, TileBuilder.DEFAULT_BUFFER_UNITS),
                 new GpxRouteLoader(),
                 new IntersectionFinder(TOLERANCE_METERS),
                 new GraphBuilder(TOLERANCE_METERS));

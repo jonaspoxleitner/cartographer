@@ -41,17 +41,25 @@ The Spring Boot frontend serves the graph as a web map and over HTTP. Start it *
 make run-server    # builds, loads all routes in routes/, serves http://localhost:8080
 ```
 
-Open <http://localhost:8080>: the page draws every edge over OpenStreetMap, highlights shared stretches, and its upload form adds a GPX file to the routes directory and rebuilds the graph without a restart. The server refuses to start when the routes directory does not exist, so put at least one `.gpx` file in `routes/` (or configure a different directory) first.
+Open <http://localhost:8080>: the page renders the graph from the vector tiles with MapLibre GL JS over OpenStreetMap, draws each edge in the colour and width of its `traversals` so shared stretches stand out, and shows an edge's `traversals`, length and route count on click. Its upload form adds a GPX file to the routes directory and reloads the tile view without a restart.
+
+The earlier Leaflet/GeoJSON page is kept as <http://localhost:8080/baseline.html>: it draws the same graph from `/api/graph`, so opening it next to the tile page diffs the two renderers directly. The server refuses to start when the routes directory does not exist, so put at least one `.gpx` file in `routes/` (or configure a different directory) first.
 
 | Method | Path | Request | Response |
 | --- | --- | --- | --- |
 | `GET` | `/api/graph` | — | `application/geo+json` FeatureCollection, one `LineString` per edge with `traversals`, `lengthMeters`, `shared` and `routes` properties |
 | `POST` | `/api/routes` | `multipart/form-data`, field `file`, `.gpx` only | JSON ack `{"filename": ..., "edges": ...}`; `400` for an invalid file, `409` when the filename is already taken (nothing is overwritten or kept) |
+| `GET` | `/tiles/{z}/{x}/{y}.mvt` | — | `application/vnd.mapbox-vector-tile` tile with one `edges` layer; `200` with an empty tile (zero layers) where no edge is visible, `400` outside the slippy-map grid (`z` 0..22, `x`/`y` in `0..2^z-1`) |
+| `GET` | `/tiles/tilejson.json` | — | TileJSON 2.2 metadata: tile URL template, zoom range, graph bounds, and the `edges` layer with its `traversals`, `lengthMeters`, `shared` and `routeCount` fields |
 
 ```bash
 curl -s http://localhost:8080/api/graph | head -c 400
 curl -F "file=@routes/komoot-1936580.gpx" http://localhost:8080/api/routes
+curl -s http://localhost:8080/tiles/tilejson.json
+curl -s -o tile.mvt http://localhost:8080/tiles/14/8819/5654.mvt
 ```
+
+Tiles cover the same graph as `/api/graph`, clipped against the tile box expanded by `cartographer.tile-buffer-units`. MVT has no array type, so a tile's properties carry `routeCount` where the GeoJSON response lists the `routes` names; `traversals`, `lengthMeters` and `shared` are the same in both. The map page builds its vector source from `/tiles/tilejson.json` and rebuilds it after every upload.
 
 The second upload of the same file answers `409 Conflict`; to add it again, rename the file first.
 
@@ -61,6 +69,7 @@ Server settings live in `cartographer-server/src/main/resources/application.prop
 | --- | --- | --- |
 | `cartographer.routes-dir` | `routes` | directory scanned for `.gpx` files on startup and after every upload |
 | `cartographer.intersection-tolerance-meters` | `10.0` | two tracks cross when they pass within this many meters of each other |
+| `cartographer.tile-buffer-units` | `64` | how far outside a tile, in tile units of 4096, edges are still drawn: the clipping buffer that hides the seams between neighbouring tiles |
 
 The values are bundled into the server jar, so edit the file and run `make package` (or `mvn package`) to apply a change. They can also be overridden on the command line, e.g. `java -jar cartographer-server/target/cartographer-server-1.0-SNAPSHOT.jar --cartographer.routes-dir=other-routes`.
 
@@ -112,13 +121,15 @@ cartographer-cli/                              # command-line frontend, shaded e
   src/main/java/com/cartographer/config/       # AppConfig, CartographerProperties
   src/main/resources/application.properties    # pipeline settings
   src/test/java/com/cartographer/              # JUnit 5 tests
-cartographer-server/                           # Spring Boot frontend: web map + GeoJSON API
+cartographer-server/                           # Spring Boot frontend: web map, GeoJSON API, vector tiles
   src/main/java/com/cartographer/server/       # ServerApplication
-  src/main/java/com/cartographer/server/api/    # GraphController, GeoJsonMapper
+  src/main/java/com/cartographer/server/api/    # GraphController, GeoJsonMapper, TileController
   src/main/java/com/cartographer/server/config/ # ServerConfig, ServerProperties
   src/main/java/com/cartographer/server/graph/  # GraphService
+  src/main/java/com/cartographer/server/tiles/  # SlippyMap, MvtEncoder, TileBuilder
   src/main/resources/application.properties     # server settings
-  src/main/resources/static/index.html          # Leaflet map and upload form
+  src/main/resources/static/index.html          # MapLibre GL tile map and upload form
+  src/main/resources/static/baseline.html       # Leaflet/GeoJSON map kept for the visual diff
   src/test/java/com/cartographer/server/        # JUnit 5 tests
 routes/                                        # GPX files, also the server's input dir (git-ignored)
 ```

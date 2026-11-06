@@ -3,6 +3,7 @@ package com.cartographer.server.config;
 import com.cartographer.io.GpxRouteLoader;
 import com.cartographer.map.GraphBuilder;
 import com.cartographer.map.IntersectionFinder;
+import com.cartographer.server.tiles.TileBuilder;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -30,5 +31,10 @@ public class ServerConfig {
     @Bean
     public GraphBuilder graphBuilder(ServerProperties properties) {
         return new GraphBuilder(properties.intersectionToleranceMeters());
+    }
+
+    @Bean
+    public TileBuilder tileBuilder(ServerProperties properties) {
+        return new TileBuilder(properties.tileBufferUnits());
     }
 }

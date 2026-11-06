@@ -30,6 +30,14 @@
       <artifactId>spring-boot-starter-test</artifactId>
       <scope>test</scope>
     </dependency>
+    <!-- decoder oracle for the hand-written MVT encoder: test scope only, so the
+         unmaintained MVT/JTS/protobuf versions it pins stay out of the server jar -->
+    <dependency>
+      <groupId>com.wdtinc</groupId>
+      <artifactId>mapbox-vector-tile</artifactId>
+      <version>3.1.0</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>

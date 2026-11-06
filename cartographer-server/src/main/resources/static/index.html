@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cartographer</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css"
+        integrity="sha384-MinO0mNliZ3vwppuPOUnGa+iq619pfMhLVUXfC4LHwSCvF9H+6P/KO4Q7qBOYV5V" crossorigin="">
   <style>
     html, body, #map {
       height: 100%;
@@ -63,13 +63,20 @@
     button {
       cursor: pointer;
     }
+    #baseline {
+      margin: 10px 0 0;
+      font-size: 12px;
+    }
+    #baseline a {
+      color: #1565c0;
+    }
   </style>
 </head>
 <body>
 <div id="map"></div>
 <div id="panel">
   <h1>cartographer</h1>
-  <p id="status">Loading graph&hellip;</p>
+  <p id="status">Loading tiles&hellip;</p>
   <ul id="legend">
     <li><span class="swatch" style="height:3px;background:#9e9e9e"></span>traversed once</li>
     <li><span class="swatch" style="height:5px;background:#f0a500"></span>shared or retraced twice</li>
@@ -79,63 +86,107 @@
     <input type="file" id="file" accept=".gpx" required>
     <button type="submit">Upload route</button>
   </form>
+  <p id="baseline"><a href="/baseline.html">GeoJSON baseline</a></p>
 </div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"
+        integrity="sha384-SYKAG6cglRMN0RVvhNeBY0r3FYKNOJtznwA0v7B5Vp9tr31xAHsZC0DqkQ/pZDmj" crossorigin=""></script>
 <script>
   'use strict';
 
-  // Same intent as the SVG renderer: shared edges stand out, and each extra
-  // pass gets wider and warmer.
-  const EDGE_STYLES = [
-    { color: '#9e9e9e', weight: 3 },
-    { color: '#f0a500', weight: 5 },
-    { color: '#e65100', weight: 7 },
+  // Same palette and widths as baseline.html, so the two pages can be diffed
+  // side by side: a single pass is thin and grey, shared or retraced stretches
+  // get wider and warmer with every extra traversal.
+  const EDGE_STYLE = [
+    { color: '#9e9e9e', width: 3 },
+    { color: '#f0a500', width: 5 },
+    { color: '#e65100', width: 7 },
   ];
+
+  const SOURCE_ID = 'graph';
+  const EDGE_LAYER_ID = 'edges';
+  const TILEJSON_URL = '/tiles/tilejson.json';
 
   const statusLine = document.getElementById('status');
   const uploadForm = document.getElementById('upload');
   const fileInput = document.getElementById('file');
 
-  const map = L.map('map').setView([20, 0], 2);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19,
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-  }).addTo(map);
+  const map = new maplibregl.Map({
+    container: 'map',
+    style: {
+      version: 8,
+      sources: {
+        osm: {
+          type: 'raster',
+          tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+          tileSize: 256,
+          maxzoom: 19,
+          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+        },
+      },
+      layers: [{id: 'osm', type: 'raster', source: 'osm'}],
+    },
+    center: [0, 20],
+    zoom: 2,
+  });
 
-  const graphLayer = L.geoJSON(null, {
-    style: feature => edgeStyle(feature.properties.traversals),
-    onEachFeature: (feature, layer) => layer.bindPopup(edgePopup(feature.properties)),
-  }).addTo(map);
+  // Same top-left zoom buttons the Leaflet baseline shows.
+  map.addControl(new maplibregl.NavigationControl(), 'top-left');
 
-  function edgeStyle(traversals) {
-    const style = EDGE_STYLES[Math.min(Math.max(traversals, 1), EDGE_STYLES.length) - 1];
-    return {
-      color: style.color,
-      weight: style.weight,
-      opacity: 0.9,
-      lineJoin: 'round',
-      lineCap: 'round',
-    };
-  }
+  // `min` clamps above at 3 before matching, mirroring baseline.html's
+  // Math.min(Math.max(traversals, 1), EDGE_STYLES.length) - 1: 1 or less falls
+  // through to the grey style, 2 is orange, 3 and above is dark orange.
+  const edgeLayer = {
+    id: EDGE_LAYER_ID,
+    type: 'line',
+    source: SOURCE_ID,
+    'source-layer': 'edges',
+    layout: {'line-cap': 'round', 'line-join': 'round'},
+    paint: {
+      'line-color': ['match', ['min', ['get', 'traversals'], 3],
+        2, EDGE_STYLE[1].color, 3, EDGE_STYLE[2].color, EDGE_STYLE[0].color],
+      'line-width': ['match', ['min', ['get', 'traversals'], 3],
+        2, EDGE_STYLE[1].width, 3, EDGE_STYLE[2].width, EDGE_STYLE[0].width],
+      'line-opacity': 0.9,
+    },
+  };
+
+  // Uploads are accepted before the MapLibre style has finished loading, so
+  // every rebuild of the tile source waits for this once. The style's own
+  // readiness is enough: waiting for the separate "load" event would hold the
+  // graph back until the basemap tiles answered, and it would never appear
+  // while they are slow or unavailable.
+  const styleReady = new Promise(resolve => {
+    if (map.isStyleLoaded()) {
+      resolve();
+    } else {
+      map.once('style.load', resolve);
+    }
+  });
+
+  map.on('mousemove', EDGE_LAYER_ID, () => {
+    map.getCanvas().style.cursor = 'pointer';
+  });
+  map.on('mouseleave', EDGE_LAYER_ID, () => {
+    map.getCanvas().style.cursor = '';
+  });
+  map.on('click', EDGE_LAYER_ID, event => {
+    const properties = event.features[0].properties;
+    new maplibregl.Popup()
+      .setLngLat(event.lngLat)
+      .setHTML(edgePopup(properties))
+      .addTo(map);
+  });
+
+  let tileGeneration = 0;
 
   function edgePopup(properties) {
-    const routes = properties.routes && properties.routes.length
-      ? properties.routes.map(escapeHtml).join(', ')
-      : '&mdash;';
-    return '<strong>' + properties.traversals + '&times; traversed</strong><br>'
-      + Math.round(properties.lengthMeters) + ' m<br>'
-      + 'routes: ' + routes;
-  }
-
-  function escapeHtml(text) {
-    return String(text)
-      .replaceAll('&', '&amp;')
-      .replaceAll('<', '&lt;')
-      .replaceAll('>', '&gt;')
-      .replaceAll('"', '&quot;')
-      .replaceAll("'", '&#39;');
+    const traversals = Number(properties.traversals);
+    const lengthMeters = Math.round(Number(properties.lengthMeters));
+    const routeCount = Number(properties.routeCount);
+    return '<strong>' + traversals + '&times; traversed</strong><br>'
+      + lengthMeters + ' m<br>'
+      + (routeCount === 1 ? 'one route' : routeCount + ' routes');
   }
 
   function setStatus(message, cssClass) {
@@ -143,25 +194,56 @@
     statusLine.className = cssClass || '';
   }
 
-  /** Replaces the drawn graph with the server's current one; returns its edge count. */
-  async function refreshGraph() {
-    const response = await fetch('/api/graph', {headers: {Accept: 'application/geo+json'}});
+  /**
+   * TileJSON publishes root-relative tile templates like
+   * {@code /tiles/{z}/{x}/{y}.mvt}, and MapLibre builds its tile requests from
+   * the template unchanged: the origin has to be prepended here, because a
+   * request for a relative URL fails. The generation adds a query parameter the
+   * server ignores, so a browser cache cannot answer with the previous graph's
+   * tiles after an upload.
+   */
+  function tileUrl(template, generation) {
+    return window.location.origin + template + (template.includes('?') ? '&' : '?') + 'v=' + generation;
+  }
+
+  /** Replaces the tile source with the server's current graph and fits the map to its bounds. */
+  async function refreshTiles() {
+    await styleReady;
+    const response = await fetch(TILEJSON_URL);
     if (!response.ok) {
       throw new Error('HTTP ' + response.status);
     }
-    const featureCollection = await response.json();
-    graphLayer.clearLayers();
-    graphLayer.addData(featureCollection);
-    const bounds = graphLayer.getBounds();
-    if (bounds.isValid()) {
-      map.fitBounds(bounds, {padding: [20, 20]});
+    const tileJson = await response.json();
+    const generation = ++tileGeneration;
+    const tiles = tileJson.tiles.map(template => tileUrl(template, generation));
+
+    // Removing the source and its layer drops everything MapLibre has cached
+    // for it, which is what makes a re-added source request the new tiles.
+    if (map.getLayer(EDGE_LAYER_ID)) {
+      map.removeLayer(EDGE_LAYER_ID);
     }
-    return featureCollection.features.length;
+    if (map.getSource(SOURCE_ID)) {
+      map.removeSource(SOURCE_ID);
+    }
+    map.addSource(SOURCE_ID, {
+      type: 'vector',
+      tiles: tiles,
+      minzoom: tileJson.minzoom,
+      maxzoom: tileJson.maxzoom,
+    });
+    map.addLayer(edgeLayer);
+
+    if (tileJson.bounds) {
+      // Instant, like the Leaflet baseline's fitBounds: the graph should be in
+      // place as soon as the page appears, not slide in over the basemap.
+      map.fitBounds([[tileJson.bounds[0], tileJson.bounds[1]], [tileJson.bounds[2], tileJson.bounds[3]]],
+        {padding: 20, animate: false});
+    }
   }
 
-  refreshGraph()
-    .then(edgeCount => setStatus(edgeCount + ' edges', 'ok'))
-    .catch(error => setStatus('Could not load the graph: ' + error.message, 'error'));
+  refreshTiles()
+    .then(() => setStatus('Vector tiles ready', 'ok'))
+    .catch(error => setStatus('Could not load the tiles: ' + error.message, 'error'));
 
   uploadForm.addEventListener('submit', async event => {
     event.preventDefault();
@@ -188,8 +270,8 @@
         return;
       }
       const ack = await response.json();
-      const edgeCount = await refreshGraph();
-      setStatus(ack.filename + ' stored, ' + edgeCount + ' edges', 'ok');
+      await refreshTiles();
+      setStatus(ack.filename + ' stored, ' + ack.edges + ' edges', 'ok');
       fileInput.value = '';
     } catch (error) {
       setStatus('Upload failed: ' + error.message, 'error');
