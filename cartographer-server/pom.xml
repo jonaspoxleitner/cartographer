@@ -19,10 +19,16 @@
       <artifactId>cartographer-core</artifactId>
       <version>${project.version}</version>
     </dependency>
-    <!-- IoC container, autoconfiguration and logging; spring-boot-starter-web arrives with the first endpoint -->
+    <!-- IoC container, autoconfiguration, logging and the embedded servlet container -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
-      <artifactId>spring-boot-starter</artifactId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <!-- JUnit 5, AssertJ, MockMvc and the Spring test context -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
     </dependency>
   </dependencies>
 

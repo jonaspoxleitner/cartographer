@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>cartographer</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+  <style>
+    html, body, #map {
+      height: 100%;
+      margin: 0;
+    }
+    body {
+      font-family: system-ui, sans-serif;
+      font-size: 14px;
+      color: #222;
+    }
+    #panel {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      z-index: 1000;
+      width: 260px;
+      padding: 12px 14px;
+      border-radius: 6px;
+      background: #fff;
+      box-shadow: 0 1px 6px rgba(0, 0, 0, 0.3);
+    }
+    #panel h1 {
+      margin: 0 0 8px;
+      font-size: 16px;
+    }
+    #status {
+      margin: 0 0 10px;
+      min-height: 1.2em;
+    }
+    #status.error {
+      color: #c62828;
+    }
+    #status.ok {
+      color: #2e7d32;
+    }
+    #legend {
+      margin: 0 0 10px;
+      padding: 0;
+      list-style: none;
+    }
+    #legend li {
+      margin: 2px 0;
+    }
+    .swatch {
+      display: inline-block;
+      width: 20px;
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+    form {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    button {
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+<div id="map"></div>
+<div id="panel">
+  <h1>cartographer</h1>
+  <p id="status">Loading graph&hellip;</p>
+  <ul id="legend">
+    <li><span class="swatch" style="height:3px;background:#9e9e9e"></span>traversed once</li>
+    <li><span class="swatch" style="height:5px;background:#f0a500"></span>shared or retraced twice</li>
+    <li><span class="swatch" style="height:7px;background:#e65100"></span>three times or more</li>
+  </ul>
+  <form id="upload">
+    <input type="file" id="file" accept=".gpx" required>
+    <button type="submit">Upload route</button>
+  </form>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script>
+  'use strict';
+
+  // Same intent as the SVG renderer: shared edges stand out, and each extra
+  // pass gets wider and warmer.
+  const EDGE_STYLES = [
+    { color: '#9e9e9e', weight: 3 },
+    { color: '#f0a500', weight: 5 },
+    { color: '#e65100', weight: 7 },
+  ];
+
+  const statusLine = document.getElementById('status');
+  const uploadForm = document.getElementById('upload');
+  const fileInput = document.getElementById('file');
+
+  const map = L.map('map').setView([20, 0], 2);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+  }).addTo(map);
+
+  const graphLayer = L.geoJSON(null, {
+    style: feature => edgeStyle(feature.properties.traversals),
+    onEachFeature: (feature, layer) => layer.bindPopup(edgePopup(feature.properties)),
+  }).addTo(map);
+
+  function edgeStyle(traversals) {
+    const style = EDGE_STYLES[Math.min(Math.max(traversals, 1), EDGE_STYLES.length) - 1];
+    return {
+      color: style.color,
+      weight: style.weight,
+      opacity: 0.9,
+      lineJoin: 'round',
+      lineCap: 'round',
+    };
+  }
+
+  function edgePopup(properties) {
+    const routes = properties.routes && properties.routes.length
+      ? properties.routes.map(escapeHtml).join(', ')
+      : '&mdash;';
+    return '<strong>' + properties.traversals + '&times; traversed</strong><br>'
+      + Math.round(properties.lengthMeters) + ' m<br>'
+      + 'routes: ' + routes;
+  }
+
+  function escapeHtml(text) {
+    return String(text)
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
+  }
+
+  function setStatus(message, cssClass) {
+    statusLine.textContent = message;
+    statusLine.className = cssClass || '';
+  }
+
+  /** Replaces the drawn graph with the server's current one; returns its edge count. */
+  async function refreshGraph() {
+    const response = await fetch('/api/graph', {headers: {Accept: 'application/geo+json'}});
+    if (!response.ok) {
+      throw new Error('HTTP ' + response.status);
+    }
+    const featureCollection = await response.json();
+    graphLayer.clearLayers();
+    graphLayer.addData(featureCollection);
+    const bounds = graphLayer.getBounds();
+    if (bounds.isValid()) {
+      map.fitBounds(bounds, {padding: [20, 20]});
+    }
+    return featureCollection.features.length;
+  }
+
+  refreshGraph()
+    .then(edgeCount => setStatus(edgeCount + ' edges', 'ok'))
+    .catch(error => setStatus('Could not load the graph: ' + error.message, 'error'));
+
+  uploadForm.addEventListener('submit', async event => {
+    event.preventDefault();
+    const file = fileInput.files[0];
+    if (!file) {
+      return;
+    }
+    setStatus('Uploading ' + file.name + '\u2026');
+
+    const body = new FormData();
+    body.append('file', file);
+    try {
+      const response = await fetch('/api/routes', {method: 'POST', body: body});
+      if (response.status === 409) {
+        setStatus(file.name + ' is already in the routes directory; rename the file and try again.', 'error');
+        return;
+      }
+      if (response.status === 400) {
+        setStatus(file.name + ' was rejected: it is not a valid .gpx file.', 'error');
+        return;
+      }
+      if (!response.ok) {
+        setStatus('Upload failed: HTTP ' + response.status, 'error');
+        return;
+      }
+      const ack = await response.json();
+      const edgeCount = await refreshGraph();
+      setStatus(ack.filename + ' stored, ' + edgeCount + ' edges', 'ok');
+      fileInput.value = '';
+    } catch (error) {
+      setStatus('Upload failed: ' + error.message, 'error');
+    }
+  });
+</script>
+</body>
+</html>

@@ -33,9 +33,40 @@ Sections (* = shared, from one junction/start to the next):
   ...
 ```
 
-## Configuration
+## Server
 
-The pipeline settings live in `cartographer-cli/src/main/resources/application.properties`, which is bundled into the CLI jar:
+The Spring Boot frontend serves the graph as a web map and over HTTP. Start it **from the repository root**, because `cartographer.routes-dir` resolves against the working directory:
+
+```bash
+make run-server    # builds, loads all routes in routes/, serves http://localhost:8080
+```
+
+Open <http://localhost:8080>: the page draws every edge over OpenStreetMap, highlights shared stretches, and its upload form adds a GPX file to the routes directory and rebuilds the graph without a restart. The server refuses to start when the routes directory does not exist, so put at least one `.gpx` file in `routes/` (or configure a different directory) first.
+
+| Method | Path | Request | Response |
+| --- | --- | --- | --- |
+| `GET` | `/api/graph` | — | `application/geo+json` FeatureCollection, one `LineString` per edge with `traversals`, `lengthMeters`, `shared` and `routes` properties |
+| `POST` | `/api/routes` | `multipart/form-data`, field `file`, `.gpx` only | JSON ack `{"filename": ..., "edges": ...}`; `400` for an invalid file, `409` when the filename is already taken (nothing is overwritten or kept) |
+
+```bash
+curl -s http://localhost:8080/api/graph | head -c 400
+curl -F "file=@routes/komoot-1936580.gpx" http://localhost:8080/api/routes
+```
+
+The second upload of the same file answers `409 Conflict`; to add it again, rename the file first.
+
+Server settings live in `cartographer-server/src/main/resources/application.properties`, separate from the CLI's file but using the same keys:
+
+| Property | Default | Meaning |
+| --- | --- | --- |
+| `cartographer.routes-dir` | `routes` | directory scanned for `.gpx` files on startup and after every upload |
+| `cartographer.intersection-tolerance-meters` | `10.0` | two tracks cross when they pass within this many meters of each other |
+
+The values are bundled into the server jar, so edit the file and run `make package` (or `mvn package`) to apply a change. They can also be overridden on the command line, e.g. `java -jar cartographer-server/target/cartographer-server-1.0-SNAPSHOT.jar --cartographer.routes-dir=other-routes`.
+
+## CLI configuration
+
+The CLI settings live in `cartographer-cli/src/main/resources/application.properties`, which is bundled into the CLI jar:
 
 | Property | Default | Meaning |
 | --- | --- | --- |
@@ -43,7 +74,7 @@ The pipeline settings live in `cartographer-cli/src/main/resources/application.p
 | `cartographer.routes-dir` | `routes` | directory scanned for `.gpx` files when none are passed on the command line |
 | `cartographer.svg-output` | `graph.svg` | where the SVG map is written |
 
-Passing `.gpx` files on the command line bypasses `routes-dir`. The properties are read from the classpath inside the jar, so edit the file and run `make package` (or `mvn package`) to apply a change; a file of the same name in the working directory is not picked up.
+Passing `.gpx` files on the command line bypasses `routes-dir`. The properties are read from the classpath inside the jar, so edit the file and run `make package` (or `mvn package`) to apply a change; a file of the same name in the working directory is not picked up. The server reads its own file with the same keys; see [Server](#server).
 
 ## Clean
 
@@ -81,7 +112,13 @@ cartographer-cli/                              # command-line frontend, shaded e
   src/main/java/com/cartographer/config/       # AppConfig, CartographerProperties
   src/main/resources/application.properties    # pipeline settings
   src/test/java/com/cartographer/              # JUnit 5 tests
-cartographer-server/                           # Spring Boot frontend (skeleton)
+cartographer-server/                           # Spring Boot frontend: web map + GeoJSON API
   src/main/java/com/cartographer/server/       # ServerApplication
-routes/                                        # sample GPX files (git-ignored)
+  src/main/java/com/cartographer/server/api/    # GraphController, GeoJsonMapper
+  src/main/java/com/cartographer/server/config/ # ServerConfig, ServerProperties
+  src/main/java/com/cartographer/server/graph/  # GraphService
+  src/main/resources/application.properties     # server settings
+  src/main/resources/static/index.html          # Leaflet map and upload form
+  src/test/java/com/cartographer/server/        # JUnit 5 tests
+routes/                                        # GPX files, also the server's input dir (git-ignored)
 ```
