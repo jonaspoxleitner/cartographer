@@ -6,6 +6,7 @@ Loads GPX routes and merges them into a single route graph, with pathfinding bet
 
 - Java 21+
 - Maven 3.9+
+- Docker with the Compose plugin, for the containerized server only (see [Docker](#docker))
 
 ## Build
 
@@ -122,6 +123,98 @@ Nearly all of the work sits at the top of the zoom range, where the tile count q
 Zoom 18 alone is 14,238 of the 19,220 tiles and 6,379 ms of the 8,842 ms; zooms 0..10 add up to twelve tiles and a few dozen milliseconds. That is why the range stops at 18 by default: z=19..22 would multiply the count four times per level for detail this data does not have.
 
 Before the cache existed, every tile was encoded on request: mean 1.27 ms, median 1.04 ms and p95 1.98 ms per tile. That cost is now paid once per rebuild instead of once per request; a request only looks its address up and copies bytes already in memory.
+
+## Docker
+
+The server also runs as a container, so this path needs Docker with the Compose plugin and no local Java or Maven. The root `Dockerfile` builds the image in two stages (Maven builds the jar, a JRE 21 image runs it) and `compose.yaml` describes the service; released images are also published to GitHub Container Registry (see [Published images](#published-images)).
+
+```bash
+make docker        # build and start in the background, serves on http://localhost:8080
+make docker-logs   # follow the server log
+docker compose ps  # shows the container and its health
+docker compose down   # or: make docker-down; keeps the tile cache
+```
+
+Use `make docker` on every platform. It starts the container with your host uid/gid (`PUID=$(id -u) PGID=$(id -g)`), and that is what makes uploads work on Docker Engine for Linux: the host checks writes into the bind-mounted `routes/` directory against host ownership, so a container running as any other user gets `EACCES` from `POST /api/routes`. The image itself is host-agnostic: it starts as root only to take ownership of the data directories (`/data` and `/data/routes` themselves; the route files inside stay with their host owner, see below) and then runs the server as those ids, so the same build serves any host uid. Docker Desktop (macOS/Windows) does not enforce bind-mount ownership, so the raw form works there too:
+
+```bash
+docker compose up --build -d   # Docker Desktop (macOS/Windows) only
+```
+
+On a Linux host, use `make docker`, or pass the ids yourself if you want to call compose directly:
+
+```bash
+PUID=$(id -u) PGID=$(id -g) docker compose up --build -d
+```
+
+The two mounts match the absolute paths `compose.yaml` sets through `CARTOGRAPHER_ROUTES_DIR` and `CARTOGRAPHER_MBTILES_FILE`:
+
+| Mount | Container path | Contents |
+| --- | --- | --- |
+| bind mount, read-write, `./routes` | `/data/routes` | the server's input directory: a GPX uploaded through the map page or `POST /api/routes` lands on the host in `routes/` |
+| named volume `cartographer-tiles` | `/data/tiles` | `tiles.mbtiles`, the pre-rendered tile cache, so a restart skips the pre-render |
+
+`docker compose down` removes the container but keeps the named volume: `docker volume ls` still lists `cartographer-tiles`, and the next `make docker` restores the tiles from it instead of rendering them again. Only `docker compose down -v` deletes the volume, and the next start then pre-renders everything — about 10 s for this repository's `routes/`.
+
+Changing `PUID`/`PGID` needs neither a rebuild nor `down -v`: every start re-takes ownership of `/data` and `/data/routes` (non-recursively, so the GPX files in the bind-mounted `routes/` keep their host ownership — the server only needs the directory itself to create uploads) plus the named volume's `/data/tiles` recursively, `tiles.mbtiles` and its `-wal`/`-shm` siblings included, before dropping to the requested ids. A restart with new ids therefore keeps the tile cache. `docker compose top` shows the server process under your ids; `docker compose exec cartographer id` reports `0` by design, because the container's own default user is root — only the server process is dropped.
+
+To serve a different routes directory, keep the container path and change only the bind mount source, with an override file next to `compose.yaml`:
+
+```yaml
+# compose.override.yaml
+services:
+  cartographer:
+    volumes: !override
+      - ./other-routes:/data/routes
+      - tiles:/data/tiles
+```
+
+Compose picks `compose.override.yaml` up on its own. The `!override` tag (Compose v2.24 or newer) replaces the volume list instead of appending a second mount at `/data/routes`, and the second entry keeps the named tile volume attached.
+
+### Published images
+
+CI publishes the image to GitHub Container Registry, so a host can run the server without building it — the way to deploy a released version, and the only way to run a version that is not this working tree:
+
+```bash
+docker compose pull
+docker compose up -d      # no --build: the pulled image is already there
+```
+
+`compose.yaml` names the image `ghcr.io/jonaspoxleitner/cartographer:latest` next to its `build:` section, so both paths share one file: `make docker` (or `docker compose up --build -d`) builds locally, and `pull` + `up -d` runs the published image, because compose finds it locally instead of rebuilding. `latest` follows the newest release tag; to pin a version, set the tag in an override file:
+
+```yaml
+# compose.override.yaml
+services:
+  cartographer:
+    image: ghcr.io/jonaspoxleitner/cartographer:1.2.3
+```
+
+The host ids work the same for a pulled image — they are a run-time setting, not a build argument, so nothing has to be rebuilt:
+
+```bash
+# Docker Engine on Linux
+docker compose pull
+PUID=$(id -u) PGID=$(id -g) docker compose up -d
+```
+
+The package starts private, because the workflow pushes it with the repository's token, and a private package makes `docker compose pull` fail with `denied` unless you are logged in (`docker login ghcr.io`). To make it public, open *Packages* on the repository owner's page, select the `cartographer` package, then *Package settings* → *Change visibility* → *Public*.
+
+### Publishing a release
+
+`.github/workflows/docker-publish.yml` builds and pushes the image on `v*` tag pushes only: nothing is published from `main`, and a manual run through the Actions UI (`workflow_dispatch`) pushes only the commit-sha tag.
+
+```bash
+git tag v1.2.3
+git push origin v1.2.3
+```
+
+| Git tag pushed | Image tags |
+| --- | --- |
+| `v1.2.3` | `1.2.3`, `1.2`, `latest`, `sha-<short commit>` |
+
+A prerelease tag such as `v1.2.3-rc1` gets its own `1.2.3-rc1` tag and leaves `latest` on the last full release.
+
+The first run also needs the repository's *Settings* → *Actions* → *General* → *Workflow permissions* set to *Read and write permissions*; the default read-only token cannot push a package. The build stage's Maven download is kept in the GitHub Actions cache (`type=gha`), so a repeat release does not fetch the dependencies again.
 
 ## CLI configuration
 

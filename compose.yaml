@@ -1,0 +1,61 @@
+# The Spring Boot server as one service: built from the root Dockerfile, routes
+# bind-mounted from the repository so uploads land on the host, tiles kept on a
+# named volume so a restart skips the pre-render.
+#
+#   make docker                  # build locally and start
+#   docker compose pull && docker compose up -d   # or run a published image
+#   docker compose ps
+#   docker compose down          # keeps the tiles volume
+#   docker compose down -v       # also drops the tile cache
+services:
+  cartographer:
+    # `build:` tags its result with this name, so the same service works both
+    # ways without editing this file: `up --build` builds locally, and
+    # `pull` + `up -d` runs the published image when one is present locally.
+    # Tags are published by .github/workflows/docker-publish.yml.
+    image: ghcr.io/jonaspoxleitner/cartographer:latest
+    build:
+      context: .
+    ports:
+      - "8080:8080"
+    environment:
+      # Absolute paths: the server's defaults resolve against the working
+      # directory, which is /app inside the image.
+      CARTOGRAPHER_ROUTES_DIR: /data/routes
+      CARTOGRAPHER_MBTILES_FILE: /data/tiles/tiles.mbtiles
+      # The uid/gid the server runs as inside the container. The entrypoint
+      # starts as root, chowns /data, then drops to these ids, so the container
+      # writes into the bind-mounted routes/ directory as the host user and a
+      # changed id is a restart, not a rebuild.
+      #
+      # On a host that checks those writes against its own permissions (Docker
+      # Engine on Linux) the defaults below cannot create files in a host-owned
+      # routes/, so pass your ids:
+      #
+      #   PUID=$(id -u) PGID=$(id -g) docker compose up --build -d
+      #
+      # `make docker` does that for you. Docker Desktop (macOS/Windows) does not
+      # enforce bind-mount ownership, so the defaults work there unchanged.
+      PUID: ${PUID:-10001}
+      PGID: ${PGID:-10001}
+    volumes:
+      # Read-write on purpose: a GPX uploaded through POST /api/routes has to end
+      # up in the host's routes/ directory.
+      - ./routes:/data/routes
+      # Survives `docker compose down` and rebuilds; only `down -v` wipes it.
+      - tiles:/data/tiles
+    healthcheck:
+      # curl against TileJSON instead of adding Spring Actuator: the server only
+      # answers this once the graph is loaded and the tiles are in place.
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/tiles/tilejson.json"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      # The first start pre-renders zooms 0..18 before the port answers at all
+      # (~8 s with the routes in routes/, so this leaves ample headroom).
+      start_period: 60s
+    restart: unless-stopped
+
+volumes:
+  tiles:
+    name: cartographer-tiles
