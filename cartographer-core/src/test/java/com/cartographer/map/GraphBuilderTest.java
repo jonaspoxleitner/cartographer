@@ -34,6 +34,11 @@ class GraphBuilderTest {
         return new GraphBuilder(tolerance).build(routes, intersections);
     }
 
+    /** Builds from explicit intersections, so a test can place cuts itself. */
+    private RouteGraph buildWith(List<Route> routes, List<Intersection> intersections) {
+        return new GraphBuilder(TOLERANCE).build(routes, intersections);
+    }
+
     /** Edge path oriented so that it starts at {@code vertex}. */
     private List<Node> pathFrom(GraphEdge edge, GraphNode vertex) {
         List<Node> path = new ArrayList<>(edge.getPath());
@@ -167,6 +172,99 @@ class GraphBuilderTest {
         assertTrue(simplified.getEdges().stream()
                         .anyMatch(edge -> edge.getPath().contains(loopStart)),
                 () -> "the folded point should stay in the path: " + simplified.getEdges());
+    }
+
+    @Test
+    void reTerminatedEdgeEndIsCutAtTheKeptJunctionInsteadOfLoopedBack() {
+        // The street is cut at a second junction 17.7 m northeast of the real
+        // one, at its own sample 10 m before it. The edge ending there
+        // approaches along the street, then takes a spoke to that stale vertex
+        // which passes the real junction and ends behind it. Fusing the two
+        // junctions must shorten the edge at the real junction: the stale
+        // vertex lies beyond it, and everything up to it is that detour.
+        double lonStep = 0.000135; // ~10 m per sample at this latitude
+        List<Node> samples = new ArrayList<>();
+        for (int i = -20; i <= 20; i++) {
+            samples.add(new Node(48.6, 13.7 + i * lonStep));
+        }
+        Node realJunction = samples.get(20);
+        Node stale = new Node(48.60011229, 13.70016981); // 17.7 m northeast
+        Route street = route(samples.toArray(new Node[0]));
+        Route south = route(realJunction, new Node(48.5990, 13.7));
+        Route west = route(realJunction, new Node(48.6, 13.699));
+        Route east = route(stale, new Node(48.6001, 13.7010));
+        Intersection kept = new Intersection(realJunction, List.of(
+                new RoutePoint(street, 20, realJunction),
+                new RoutePoint(south, 0, realJunction),
+                new RoutePoint(west, 0, realJunction)));
+        Intersection folded = new Intersection(stale, List.of(
+                new RoutePoint(street, 19, samples.get(19)),
+                new RoutePoint(east, 0, stale)));
+
+        RouteGraph graph = new GraphBuilder(TOLERANCE)
+                .simplify(buildWith(List.of(street, south, west, east), List.of(kept, folded)));
+
+        assertEquals(1, graph.getJunctions().size(), () -> "vertices: " + graph.getNodes());
+        GraphNode junction = graph.getJunctions().get(0);
+        assertEquals(realJunction, junction.getLocation(), "the kept vertex must win the fusion");
+        GraphEdge approach = graph.edgesFrom(junction).stream()
+                .filter(edge -> edge.getRoutes().contains(street))
+                .filter(edge -> edge.otherEnd(junction).getLocation().equals(samples.get(0)))
+                .findFirst().orElseThrow(() -> new AssertionError("edges: " + graph.getEdges()));
+        List<Node> path = pathFrom(approach, junction);
+        assertEquals(junction.getLocation(), path.get(0),
+                () -> "the edge must end at the kept junction: " + path);
+        assertFalse(path.contains(stale),
+                () -> "the stale vertex coordinate must be cut away: " + path);
+        assertTrue(path.stream()
+                        .allMatch(node -> node.getLongitude() <= junction.getLocation().getLongitude()),
+                () -> "the edge must not overshoot the junction eastward: " + path);
+    }
+
+    @Test
+    void reTerminatedEdgeStartIsCutAtTheKeptJunctionInsteadOfLoopedBack() {
+        // Mirror case: the stale junction sits 17.7 m southwest of the kept
+        // one, and the street leaves it eastward straight through the kept
+        // junction. Re-termination must start the edge at the kept junction
+        // and keep only the stretch on its far side.
+        double lonStep = 0.000135;
+        List<Node> samples = new ArrayList<>();
+        for (int i = -20; i <= 20; i++) {
+            samples.add(new Node(48.6, 13.7 + i * lonStep));
+        }
+        Node realJunction = samples.get(20);
+        Node stale = new Node(48.59988771, 13.69983019); // 17.7 m southwest
+        Route street = route(samples.toArray(new Node[0]));
+        Route north = route(realJunction, new Node(48.6010, 13.7));
+        Route northwest = route(realJunction, new Node(48.6009, 13.699));
+        Route south = route(stale, new Node(48.5990, 13.69983019));
+        Intersection kept = new Intersection(realJunction, List.of(
+                new RoutePoint(street, 20, realJunction),
+                new RoutePoint(north, 0, realJunction),
+                new RoutePoint(northwest, 0, realJunction)));
+        Intersection folded = new Intersection(stale, List.of(
+                new RoutePoint(street, 21, samples.get(21)),
+                new RoutePoint(south, 0, stale)));
+
+        RouteGraph graph = new GraphBuilder(TOLERANCE)
+                .simplify(buildWith(List.of(street, north, northwest, south), List.of(kept, folded)));
+
+        assertEquals(1, graph.getJunctions().size(), () -> "vertices: " + graph.getNodes());
+        GraphNode junction = graph.getJunctions().get(0);
+        assertEquals(realJunction, junction.getLocation(), "the kept vertex must win the fusion");
+        GraphEdge departure = graph.edgesFrom(junction).stream()
+                .filter(edge -> edge.getRoutes().contains(street))
+                .filter(edge -> edge.otherEnd(junction).getLocation()
+                        .equals(samples.get(samples.size() - 1)))
+                .findFirst().orElseThrow(() -> new AssertionError("edges: " + graph.getEdges()));
+        List<Node> path = pathFrom(departure, junction);
+        assertEquals(junction.getLocation(), path.get(0),
+                () -> "the edge must start at the kept junction: " + path);
+        assertFalse(path.contains(stale),
+                () -> "the stale vertex coordinate must be cut away: " + path);
+        assertTrue(path.stream()
+                        .allMatch(node -> node.getLongitude() >= junction.getLocation().getLongitude()),
+                () -> "the edge must not overshoot the junction westward: " + path);
     }
 
     @Test
@@ -331,6 +429,101 @@ class GraphBuilderTest {
         List<GraphEdge> street = graph.getEdges().stream().filter(GraphEdge::isShared).toList();
         assertEquals(1, street.size(), () -> "edges: " + graph.getEdges());
         assertEquals(3, street.get(0).getRoutes().size());
+    }
+
+    @Test
+    void sparseStreetIsCutAtItsOwnJunctionOnly() {
+        // The street is sampled every 15 m. Another route records a junction
+        // 2 m from sample 5, so the street is cut there. A second junction
+        // 12.8 m away projects onto the same spot of the street, 6.5 m past
+        // that cut. Cutting it again would tear the edge apart one sample
+        // further on, where the junction does not reach, and the drawn edge
+        // would pass the junction and come back to it.
+        Node[] samples = new Node[9];
+        for (int i = 0; i < samples.length; i++) {
+            samples[i] = new Node(48.0 + i * 0.000135, 13.0);
+        }
+        Route street = route(samples);
+        Route neighbour = route(new Node(48.000675, 13.0000269), // 2 m east of sample 5
+                new Node(48.000675, 13.0005));
+        Node nearby = new Node(48.0007334, 13.0001745); // 6.5 m north, 13 m east of sample 5
+        Route first = route(nearby, new Node(48.0007334, 13.001));
+        Route second = route(new Node(48.0007334, 13.0001746), new Node(48.0007334, 12.999));
+
+        RouteGraph graph = build(List.of(street, neighbour, first, second));
+
+        assertEquals(2, graph.getJunctions().size(), () -> "vertices: " + graph.getNodes());
+        for (GraphNode junction : graph.getJunctions()) {
+            boolean ownCut = junction.getLocation().distanceTo(samples[5]) < TOLERANCE;
+            boolean carriesStreet = graph.edgesFrom(junction).stream()
+                    .anyMatch(edge -> edge.getRoutes().contains(street));
+            assertEquals(ownCut, carriesStreet,
+                    () -> "the street is cut at its own junction only: " + junction);
+        }
+        // start -> cut -> finish, with no cut in between
+        assertEquals(2, graph.getEdges().stream()
+                        .filter(edge -> edge.getRoutes().contains(street)).count(),
+                () -> "edges: " + graph.getEdges());
+    }
+
+    @Test
+    void denseStreetIsCutOnceWhereTwoJunctionsProject() {
+        // One sample per metre. The junction 9 m west of sample 10 pulls
+        // samples 6..14 into one junction; the second junction projects 1.5 m
+        // past that run, i.e. onto the same spot of the street, though it is
+        // 1.5 samples away. The index distance says nothing about how far
+        // apart two cuts are, the tolerance does.
+        Node[] samples = new Node[21];
+        for (int i = 0; i < samples.length; i++) {
+            samples[i] = new Node(48.0 + i * 0.000009, 13.0);
+        }
+        Route street = route(samples);
+        Route neighbour = route(new Node(48.00009, 12.999879), // 9 m west of sample 10
+                new Node(48.00009, 12.9994));
+        Node nearby = new Node(48.0001395, 13.0001747); // 1.5 m north of sample 15, 13 m east
+        Route first = route(nearby, new Node(48.0001395, 13.001));
+        Route second = route(new Node(48.0001396, 13.0001747), new Node(48.0001395, 12.999));
+
+        RouteGraph graph = build(List.of(street, neighbour, first, second));
+
+        assertEquals(2, graph.getJunctions().size(), () -> "vertices: " + graph.getNodes());
+        for (GraphNode junction : graph.getJunctions()) {
+            boolean ownCut = junction.getLocation().distanceTo(samples[10]) < TOLERANCE;
+            boolean carriesStreet = graph.edgesFrom(junction).stream()
+                    .anyMatch(edge -> edge.getRoutes().contains(street));
+            assertEquals(ownCut, carriesStreet,
+                    () -> "the street is cut at its own junction only: " + junction);
+        }
+        assertEquals(2, graph.getEdges().stream()
+                        .filter(edge -> edge.getRoutes().contains(street)).count(),
+                () -> "edges: " + graph.getEdges());
+    }
+
+    @Test
+    void sparseSamplesAreNotCutWhereTheJunctionLiesBeyondTheSegment() {
+        // Samples 60 m apart, the junction 20 m beside sample 2: the closest
+        // point of the track is that sample itself, and the projection is
+        // clamped to it. The junction does not touch the street there, so a
+        // cut at the sample would move the junction by 20 m.
+        Node[] samples = new Node[5];
+        for (int i = 0; i < samples.length; i++) {
+            samples[i] = new Node(48.0 + i * 0.00054, 13.0);
+        }
+        Route street = route(samples);
+        Node beside = new Node(48.00108, 13.0002688); // 20 m east of sample 2
+        Route first = route(beside, new Node(48.00108, 13.001));
+        Route second = route(new Node(48.00108, 13.0002689), new Node(48.0025, 13.0002688));
+
+        RouteGraph graph = build(List.of(street, first, second));
+
+        assertEquals(1, graph.getJunctions().size(), () -> "vertices: " + graph.getNodes());
+        GraphNode junction = graph.getJunctions().get(0);
+        assertTrue(graph.edgesFrom(junction).stream()
+                        .noneMatch(edge -> edge.getRoutes().contains(street)),
+                () -> "the street is not cut at the clamped projection: " + junction);
+        assertEquals(1, graph.getEdges().stream()
+                        .filter(edge -> edge.getRoutes().contains(street)).count(),
+                () -> "the street stays one edge: " + graph.getEdges());
     }
 
     @Test
@@ -502,6 +695,90 @@ class GraphBuilderTest {
             nodes.add(new Node(48.6000, 13.7025 + i * 0.0000135));
         }
         return nodes;
+    }
+
+    @Test
+    void partiallyOverlappingEdgesAreCutAtBothForks() {
+        // Two recordings of one street that never meet at a vertex: b joins
+        // the street 4 m off its centre line, stays on it for ~220 m and
+        // leaves again. Without a fork the map draws the shared stretch
+        // twice, and the two edges merge and split with no junction.
+        List<Node> street = streetNodes();
+        Route a = route(street.toArray(new Node[0]));
+        List<Node> joining = new ArrayList<>();
+        joining.add(new Node(48.0020, 13.00054)); // 40 m east of the street
+        joining.add(new Node(48.0020, 13.000054)); // 4 m off the centre line
+        for (int i = 21; i <= 40; i++) {
+            joining.add(offsetEast(street.get(i), 4));
+        }
+        joining.add(new Node(48.0040, 13.00054));
+        joining.add(new Node(48.0040, 13.0010));
+        Route b = route(joining.toArray(new Node[0]));
+
+        RouteGraph graph = new GraphBuilder(TOLERANCE).simplify(buildWith(List.of(a, b), List.of()));
+
+        assertEquals(2, graph.getJunctions().size(), () -> "vertices: " + graph.getNodes());
+        assertTrue(graph.getJunctions().stream()
+                        .allMatch(j -> j.getLocation().equals(street.get(20))
+                                || j.getLocation().equals(street.get(40))),
+                () -> "the forks are the ends of the shared stretch: " + graph.getJunctions());
+        List<GraphEdge> shared = graph.getEdges().stream().filter(GraphEdge::isShared).toList();
+        assertEquals(1, shared.size(), () -> "edges: " + graph.getEdges());
+        assertTrue(shared.get(0).getRoutes().containsAll(List.of(a, b)),
+                () -> "one edge carries both routes: " + shared.get(0));
+        assertTrue(List.of(shared.get(0).getFrom(), shared.get(0).getTo())
+                        .containsAll(graph.getJunctions()),
+                () -> "the shared edge runs between the two forks: " + shared.get(0));
+        assertEquals(222, shared.get(0).getLengthMeters(), 10,
+                () -> "the shared stretch is one street length: " + shared.get(0));
+    }
+
+    @Test
+    void coincidenceShorterThanTheGpsOffsetIsLeftAlone() {
+        // Same shape, but b only brushes the street for ~22 m and leaves it:
+        // a crossing explains a coincidence that short, so no fork is cut.
+        List<Node> street = streetNodes();
+        Route a = route(street.toArray(new Node[0]));
+        Route b = route(new Node(48.0030, 13.00054), offsetEast(street.get(30), 4),
+                offsetEast(street.get(31), 4), offsetEast(street.get(32), 4),
+                new Node(48.0032, 13.00054), new Node(48.0032, 13.0010));
+
+        RouteGraph graph = new GraphBuilder(TOLERANCE).simplify(buildWith(List.of(a, b), List.of()));
+
+        assertEquals(0, graph.getJunctions().size(), () -> "vertices: " + graph.getNodes());
+        assertEquals(2, graph.getEdges().size(), () -> "edges: " + graph.getEdges());
+        assertTrue(graph.getEdges().stream().noneMatch(GraphEdge::isShared));
+    }
+
+    @Test
+    void edgesThatCrossAtOnePointAreLeftAlone() {
+        // b crosses the street between two of its samples: the paths share no
+        // stretch, only a point, and a crossing needs no fork.
+        List<Node> street = streetNodes();
+        Route a = route(street.toArray(new Node[0]));
+        Route b = route(new Node(48.00295, 12.9995), new Node(48.00295, 13.0),
+                new Node(48.00295, 13.0005));
+
+        RouteGraph graph = new GraphBuilder(TOLERANCE).simplify(buildWith(List.of(a, b), List.of()));
+
+        assertEquals(0, graph.getJunctions().size(), () -> "vertices: " + graph.getNodes());
+        assertEquals(2, graph.getEdges().size(), () -> "edges: " + graph.getEdges());
+        assertTrue(graph.getEdges().stream().noneMatch(GraphEdge::isShared));
+    }
+
+    /** A north-south street 48.0000..48.0060, samples ~11 m apart. */
+    private List<Node> streetNodes() {
+        List<Node> street = new ArrayList<>();
+        for (int i = 0; i <= 60; i++) {
+            street.add(new Node(48.0000 + i * 0.0001, 13.0));
+        }
+        return street;
+    }
+
+    /** The same point shifted east: a second recording of the same place. */
+    private Node offsetEast(Node node, double meters) {
+        double metersPerDegreeLongitude = 111_320.0 * Math.cos(Math.toRadians(node.getLatitude()));
+        return new Node(node.getLatitude(), node.getLongitude() + meters / metersPerDegreeLongitude);
     }
 
     @Test

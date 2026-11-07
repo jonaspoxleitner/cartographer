@@ -45,6 +45,19 @@ public final class RoutesFingerprint {
      * writes, layers it emits, property values on a feature. Tiles rendered under
      * another version fail the fingerprint and are rendered again.
      *
+     * <p>6 — two edges are only treated as one street where they lie within
+     * half the matching tolerance, so a footpath running beside a road stays a
+     * separate line instead of being folded onto the road.
+     *
+     * <p>5 — two edges that run the same street for part of their length are
+     * cut at both fork points and the coincident stretch is merged, so the same
+     * routes now render to a graph with one more junction than under version 4.
+     *
+     * <p>4 — junctions are cut at the route's own nearest point instead of a
+     * neighbouring sample, re-terminated edges end at the kept junction, and a
+     * street walked by two routes becomes one shared edge, so the same routes
+     * now render to a different graph than under version 3.
+     *
      * <p>3 — track points are filtered by {@link KalmanTrackFilter} before the
      * graph is built, so the same routes now render to the geometry that filter
      * leaves behind.
@@ -52,7 +65,7 @@ public final class RoutesFingerprint {
      * <p>2 — edges cut at the junction circle with a spoke to the junction
      * coordinate, plus the {@code junctions} point layer.
      */
-    static final int TILE_FORMAT_VERSION = 3;
+    static final int TILE_FORMAT_VERSION = 6;
 
     /** Terminates each field fed into the digest, so a name ending in digits cannot merge with a size. */
     private static final byte FIELD_SEPARATOR = 0;

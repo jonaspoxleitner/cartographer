@@ -37,8 +37,8 @@ public class IntersectionFinder {
     // (in tolerance multiples) is a region of overlapping dense tracks —
     // e.g. coverage walking with parallel passes within the tolerance —
     // not a crossroads. Cutting a track at such a cluster's centroid would
-    // swallow the tracks passing through it. The one exception is an
-    // out-and-back corridor (see splitOutAndBack).
+    // swallow the tracks passing through it. The one exception is a
+    // corridor walked twice (see splitCorridor).
     private static final double MAX_CLUSTER_EXTENT_FACTOR = 4.0;
 
     // Track points sampled at most this many indices apart belong to the
@@ -96,7 +96,7 @@ public class IntersectionFinder {
                     intersections.add(new Intersection(centroid(cluster), cluster));
                 }
             } else {
-                intersections.addAll(splitOutAndBack(cluster));
+                intersections.addAll(splitCorridor(cluster));
             }
         }
         return intersections;
@@ -115,40 +115,136 @@ public class IntersectionFinder {
     }
 
     /**
-     * A same-route cluster that is too spread out to be a junction may be a
-     * corridor walked twice: the street and its return leg stay within
-     * tolerance along the whole length, so both legs chain into one cluster
-     * that is street-length long instead of point-sized. Cut it at the
-     * corridor's two ends instead of dropping it: the graph then merges the
-     * two legs into one shared street.
+     * A cluster too spread out to be a junction may be a corridor walked
+     * twice: the passes stay within tolerance along the whole length, so they
+     * chain into one cluster that is street-length long instead of
+     * point-sized. Cut it at the corridor's two ends instead of dropping it:
+     * the graph then merges the passes into one shared street.
      * <p>
-     * The legs are the cluster's contiguous index runs. They meet at the two
-     * corridor ends, either running in opposite directions (classic out and
-     * back: one run's start meets the other's end) or the same direction
-     * (the street walked twice the same way: starts meet starts). Exactly two
-     * runs that meet at both ends are a corridor; more runs are a coverage
-     * pattern with its own crossings, not a single corridor.
+     * The passes are one route retracing its steps, or two routes that
+     * recorded the same street. Two runs are a corridor when their ends meet
+     * at both ends, either running in opposite directions (classic out and
+     * back: one run's start meets the other's end) or the same direction (the
+     * street walked twice the same way: starts meet starts). Three runs are a
+     * corridor when one route walked the street once while the other walked it
+     * once in each direction: only the route that walked it once contributes a
+     * single run, and that run is the shared stretch. Either way every route in
+     * the cluster has to reach both corridor ends, and no route may contribute
+     * more than two runs. Everything else is a coverage pattern with its own
+     * crossings, not one corridor: a route walking the street three times,
+     * three routes walking it once each, and a cluster whose ends are not
+     * pinned to the two places the corridor runs between.
+     * <p>
+     * Package-private so the corridor rule can be tested on a cluster whose
+     * routes do not all reach both ends: the clustering itself cannot produce
+     * one, because every point it clusters lies within tolerance of the other
+     * route and the reach tolerance is wider than that.
      */
-    private List<Intersection> splitOutAndBack(List<RoutePoint> cluster) {
-        if (distinctRoutes(cluster).size() != 1) {
-            return List.of(); // cross-route clusters are never one corridor
-        }
-        List<RoutePoint> ordered = new ArrayList<>(cluster);
-        ordered.sort(Comparator.comparingInt(RoutePoint::index));
-        List<Run> runs = splitRuns(ordered);
-        if (runs.size() != 2) {
+    List<Intersection> splitCorridor(List<RoutePoint> cluster) {
+        List<Run> runs = corridorRuns(cluster);
+        Run sharedStretch = sharedStretch(runs);
+        if (sharedStretch == null) {
             return List.of();
         }
-        Run first = runs.get(0);
-        Run second = runs.get(1);
-        List<Intersection> opposite = corridorEnds(first.first(), second.last(),
-                first.last(), second.first());
-        return opposite != null ? opposite
-                : corridorEnds(first.first(), second.first(), first.last(), second.last());
+        List<RoutePoint> ends = corridorEnds(cluster, sharedStretch);
+        if (ends == null) {
+            return List.of();
+        }
+        Intersection start = corridorEnd(cluster, runs, ends.get(0));
+        Intersection end = corridorEnd(cluster, runs, ends.get(1));
+        return start != null && end != null ? List.of(start, end) : List.of();
+    }
+
+    /**
+     * The run whose two ends are the corridor's ends, or null when the
+     * cluster's runs do not pair into one corridor. Two runs are the two
+     * passes over the street, so either one spans the shared stretch. Three
+     * runs are one single pass of one route plus an out-and-back pass of
+     * another: only the route that walked the street once contributes exactly
+     * one run, and that run is the shared stretch.
+     */
+    private Run sharedStretch(List<Run> runs) {
+        if (runs.size() == 2) {
+            return runs.get(0);
+        }
+        if (runs.size() != 3) {
+            return null;
+        }
+        List<Run> single = runs.stream()
+                .filter(run -> runsOf(runs, run.first().route()) == 1)
+                .toList();
+        return single.size() == 1 ? single.get(0) : null;
+    }
+
+    private long runsOf(List<Run> runs, Route route) {
+        return runs.stream().filter(run -> run.first().route() == route).count();
+    }
+
+    /**
+     * The corridor's two ends: the ends of the shared stretch. A stretch that
+     * ends where it starts was walked out and back inside a single run, so its
+     * far end is that run's turnaround. Null when it turns around where it
+     * started: then the cluster holds no stretch to cut.
+     */
+    private List<RoutePoint> corridorEnds(List<RoutePoint> cluster, Run sharedStretch) {
+        RoutePoint start = sharedStretch.first();
+        if (start.node().distanceTo(sharedStretch.last().node()) > corridorProximityMeters()) {
+            return List.of(start, sharedStretch.last());
+        }
+        RoutePoint turnaround = turnaround(cluster, sharedStretch);
+        if (turnaround.node().distanceTo(start.node()) <= corridorProximityMeters()) {
+            return null;
+        }
+        return List.of(start, turnaround);
+    }
+
+    /** The point of the run farthest from its start: where the run turned
+     *  around, once it walked out and came back the same way. */
+    private RoutePoint turnaround(List<RoutePoint> cluster, Run run) {
+        RoutePoint start = run.first();
+        RoutePoint farthest = start;
+        double farthestDistance = 0;
+        for (RoutePoint point : runPoints(cluster, run)) {
+            double distance = point.node().distanceTo(start.node());
+            if (distance > farthestDistance) {
+                farthestDistance = distance;
+                farthest = point;
+            }
+        }
+        return farthest;
+    }
+
+    /** The route's cluster points inside the run, in track order. */
+    private List<RoutePoint> runPoints(List<RoutePoint> cluster, Run run) {
+        return cluster.stream()
+                .filter(point -> point.route() == run.first().route())
+                .filter(point -> point.index() >= run.first().index()
+                        && point.index() <= run.last().index())
+                .sorted(Comparator.comparingInt(RoutePoint::index))
+                .toList();
     }
 
     /** A pass over the corridor: its first and last clustered track point. */
     private record Run(RoutePoint first, RoutePoint last) {}
+
+    /**
+     * The cluster's passes, split per route: a track index only means
+     * something within its own route's track, so each route's cluster points
+     * are ordered and cut into runs on their own. A street recorded by two
+     * routes holds one pass of each; a route that walked the corridor twice
+     * contributes two runs.
+     */
+    private List<Run> corridorRuns(List<RoutePoint> cluster) {
+        List<Run> runs = new ArrayList<>();
+        for (Route route : distinctRoutes(cluster)) {
+            List<RoutePoint> ordered = cluster.stream()
+                    .filter(point -> point.route() == route)
+                    .sorted(Comparator.comparingInt(RoutePoint::index))
+                    .toList();
+            runs.addAll(splitRuns(ordered));
+        }
+        return runs;
+    }
 
     private List<Run> splitRuns(List<RoutePoint> ordered) {
         List<Run> runs = new ArrayList<>();
@@ -193,21 +289,74 @@ public class IntersectionFinder {
     }
 
     /**
-     * The two corridor ends, each pairing one run end with its partner, or
-     * null if the ends do not meet: a corridor's legs share both ends.
+     * One corridor end, cut once per visit: every stretch of a route that comes
+     * within the corridor's width of the end contributes one point. A route that
+     * reaches the same end twice — at the two ends of one out-and-back run, or
+     * with one pass per direction in two runs — is thus cut there twice, and
+     * neither pass stays a separate parallel edge. Null when a route in the
+     * cluster does not reach the end at all: then the ends are not pinned to two
+     * places and the cluster is a coverage pattern.
      */
-    private List<Intersection> corridorEnds(RoutePoint startA, RoutePoint startB,
-                                            RoutePoint endA, RoutePoint endB) {
-        if (!meetAtCorridorEnd(startA, startB) || !meetAtCorridorEnd(endA, endB)) {
-            return null;
+    private Intersection corridorEnd(List<RoutePoint> cluster, List<Run> runs, RoutePoint corridorEnd) {
+        List<RoutePoint> visits = new ArrayList<>(runs.size());
+        for (Route route : distinctRoutes(cluster)) {
+            int before = visits.size();
+            for (Run run : runs) {
+                if (run.first().route() == route) {
+                    addVisits(visits, run, runPoints(cluster, run), corridorEnd);
+                }
+            }
+            if (visits.size() == before) {
+                return null;
+            }
         }
-        return List.of(
-                new Intersection(centroid(List.of(startA, startB)), List.of(startA, startB)),
-                new Intersection(centroid(List.of(endA, endB)), List.of(endA, endB)));
+        return new Intersection(centroid(visits), visits);
     }
 
-    private boolean meetAtCorridorEnd(RoutePoint a, RoutePoint b) {
-        return a.node().distanceTo(b.node()) <= corridorProximityMeters();
+    /** Adds one cut per contiguous stretch of run points within the corridor's
+     *  width of the end. */
+    private void addVisits(List<RoutePoint> visits, Run run, List<RoutePoint> runPoints,
+                           RoutePoint corridorEnd) {
+        List<RoutePoint> visit = new ArrayList<>();
+        for (RoutePoint point : runPoints) {
+            if (point.node().distanceTo(corridorEnd.node()) > corridorProximityMeters()) {
+                if (!visit.isEmpty()) {
+                    visits.add(visitedPoint(visit, run, corridorEnd));
+                    visit.clear();
+                }
+            } else {
+                visit.add(point);
+            }
+        }
+        if (!visit.isEmpty()) {
+            visits.add(visitedPoint(visit, run, corridorEnd));
+        }
+    }
+
+    /**
+     * Where one visit is cut. A visit that includes one of the run's own ends
+     * is cut there: the corridor end is a run end, so the cut stays on the
+     * recorded point that delimits the pass. A visit the run passes through in
+     * the middle of its track has no such point and is cut at the recording
+     * closest to the corridor end instead.
+     */
+    private RoutePoint visitedPoint(List<RoutePoint> visit, Run run, RoutePoint corridorEnd) {
+        List<RoutePoint> runEnds = visit.stream()
+                .filter(point -> point.index() == run.first().index()
+                        || point.index() == run.last().index())
+                .toList();
+        return nearest(runEnds.isEmpty() ? visit : runEnds, corridorEnd);
+    }
+
+    private RoutePoint nearest(List<RoutePoint> points, RoutePoint corridorEnd) {
+        RoutePoint nearest = points.get(0);
+        for (RoutePoint point : points) {
+            if (point.node().distanceTo(corridorEnd.node())
+                    < nearest.node().distanceTo(corridorEnd.node())) {
+                nearest = point;
+            }
+        }
+        return nearest;
     }
 
     /**

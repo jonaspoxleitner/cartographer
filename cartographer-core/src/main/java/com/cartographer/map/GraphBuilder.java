@@ -25,6 +25,17 @@ public class GraphBuilder {
     // GPS inaccuracy of ~10 m per side, plus cut-point drift.
     private static final double GPS_OFFSET_FACTOR = 4.0;
 
+    // The simplification steps converge: each pass either removes a vertex
+    // or splits an edge at a fork a full GPS offset away from every other
+    // fork. If a step still returns a new graph after this many passes it
+    // is spinning, and the exception names it instead of hanging silently.
+    private static final int MAX_SIMPLIFY_PASSES = 200;
+
+    // Distances come from a local flat projection, so two points at the same
+    // place can differ by rounding noise. A re-terminated path's closest
+    // approach must beat its stale end by more than that to be a pass-by.
+    private static final double CLOSEST_APPROACH_EPSILON_METERS = 1e-6;
+
     // Edges end this far from the junction coordinate and continue as a
     // straight spoke to it, so every edge meeting at a junction terminates
     // at the identical vertex. Which track point a route happened to record
@@ -94,6 +105,10 @@ public class GraphBuilder {
      * route's segments, cut there too: the junction gets a projected point
      * on that segment, so all routes through the junction get edges that
      * start and end at the same vertex and merge cleanly.
+     * <p>
+     * Cluster cuts are placed by {@link #findCuts} before this runs, and a
+     * projected cut is only made where no cut exists yet, so on the route
+     * that recorded the junction its own cluster cut always wins.
      */
     private void snapAtJunctions(List<Node> track, List<Cut> cuts, List<GraphNode> junctions) {
         boolean changed = true;
@@ -119,8 +134,16 @@ public class GraphBuilder {
     }
 
     /**
-     * The best cut for a junction: the projection onto the closest track
-     * segment, if within the GPS offset and not duplicating a nearby cut.
+     * The cut for a junction: the projection onto the closest track segment,
+     * if within the GPS offset. Only that one projection counts — if it lands
+     * on an existing cut, the existing cut already is this junction's point on
+     * the route, and {@link #fuseCloseJunctions} merges the two vertices, so no
+     * further segment is tried. Falling back would cut the route at a spot the
+     * junction does not touch, and the edge would then run past the junction.
+     * <p>
+     * A projection clamped to a segment end is not a pass either: it only says
+     * the junction lies somewhere beyond that segment, up to the GPS offset
+     * away. Cutting at the sample there would drag the junction off its place.
      */
     private Cut closestSegmentCut(List<Node> track, List<Cut> cuts, GraphNode junction) {
         Node p = junction.getLocation();
@@ -129,26 +152,30 @@ public class GraphBuilder {
         for (int k = 0; k < track.size() - 1; k++) {
             double[] t = new double[1];
             double distance = pointToSegmentMeters(p, track.get(k), track.get(k + 1), t);
-            if (distance >= bestDistance) {
-                continue;
-            }
-            double position = k + t[0];
-            if (tooCloseToExistingCut(track, cuts, position)) {
+            // a projection at a segment end was clamped: the junction lies
+            // beyond that segment, not beside the route
+            if (distance >= bestDistance || t[0] <= 0 || t[0] >= 1) {
                 continue;
             }
             bestDistance = distance;
-            best = new Cut(position, junction);
+            best = new Cut(k + t[0], junction);
+        }
+        if (best != null && tooCloseToExistingCut(track, cuts, best.position())) {
+            return null;
         }
         return best;
     }
 
-    /** Avoid cutting the same stretch twice when two junctions' projections
-     *  land within tolerance of each other on this route. */
+    /**
+     * Avoid cutting the same spot twice when two junctions' projections land
+     * on the same place. Measured in metres along the track, not in track
+     * indices: one index is a metre on a dense recording and 140 m on a sparse
+     * one, and the tolerance decides whether two cuts are the same point.
+     */
     private boolean tooCloseToExistingCut(List<Node> track, List<Cut> cuts, double position) {
         Node candidate = pointAt(track, position);
         for (Cut cut : cuts) {
-            if (Math.abs(cut.position() - position) <= 1.0
-                    && candidate.distanceTo(pointAt(track, cut.position())) < toleranceMeters) {
+            if (candidate.distanceTo(pointAt(track, cut.position())) < toleranceMeters) {
                 return true;
             }
         }
@@ -296,20 +323,81 @@ public class GraphBuilder {
      * Fusing moves a vertex but leaves the edges' stored paths ending at the
      * old point, so a rebuilt end is terminated at the junction it was folded
      * into, the same way a freshly built segment end is.
+     * <p>
+     * The old point is not necessarily on this side of the kept junction. If
+     * the path passes the junction before it reaches that stale point, the
+     * part in between belongs to the dropped vertex and is cut away; keeping
+     * it would draw the edge past the junction and back to the stale point,
+     * i.e. a spur on the wrong side of the junction. A path that leads away
+     * from the junction right at the stale point keeps its recorded point and
+     * is terminated with a spoke, as before.
      */
     private List<Node> terminateAtStart(List<Node> path, GraphNode junction) {
-        if (path.get(0).equals(junction.getLocation())) {
+        Node location = junction.getLocation();
+        if (path.get(0).equals(location)) {
             return path;
         }
-        return cutAtStart(path, junction.getLocation());
+        double approach = closestApproach(path, location, true);
+        return cutAtStart(approach < 0 ? path : pathFrom(path, approach), location);
     }
 
     /** End end of the path, terminated the same way as {@link #terminateAtStart}. */
     private List<Node> terminateAtEnd(List<Node> path, GraphNode junction) {
-        if (path.get(path.size() - 1).equals(junction.getLocation())) {
+        Node location = junction.getLocation();
+        if (path.get(path.size() - 1).equals(location)) {
             return path;
         }
-        return cutAtEnd(path, junction.getLocation());
+        double approach = closestApproach(path, location, false);
+        return cutAtEnd(approach < 0 ? path : pathTo(path, approach), location);
+    }
+
+    /**
+     * Where the path passes the junction, walking in from one end, as a
+     * fractional position in path order; -1 when it does not pass it. A pass
+     * is a closest approach inside the junction circle that is neither the
+     * entered end nor the path's other end: only then does the route leave the
+     * stale point, pass the junction and continue. A path that keeps
+     * approaching up to its far end runs to the junction, it does not pass it.
+     * The walk stops at the first minimum, so a later loop back to the same
+     * junction does not cut the path short.
+     */
+    private double closestApproach(List<Node> path, Node junction, boolean fromStart) {
+        List<Node> ordered = fromStart ? path : reversed(path);
+        double best = ordered.get(0).distanceTo(junction);
+        double approach = -1;
+        for (int i = 0; i < ordered.size() - 1; i++) {
+            double[] t = new double[1];
+            double distance = pointToSegmentMeters(junction, ordered.get(i), ordered.get(i + 1), t);
+            if (distance < best - CLOSEST_APPROACH_EPSILON_METERS) {
+                best = distance;
+                approach = i + t[0];
+            } else if (approach >= 0) {
+                break;
+            }
+        }
+        if (approach <= 0 || best > JUNCTION_CIRCLE_RADIUS_METERS) {
+            return -1;
+        }
+        double position = fromStart ? approach : path.size() - 1 - approach;
+        return position > 0 && position < path.size() - 1 ? position : -1;
+    }
+
+    /** The path starting at the fractional position {@code position}. */
+    private List<Node> pathFrom(List<Node> path, double position) {
+        List<Node> tail = new ArrayList<>();
+        tail.add(pointAt(path, position));
+        tail.addAll(path.subList((int) Math.floor(position) + 1, path.size()));
+        return tail;
+    }
+
+    /** The path ending at the fractional position {@code position}. */
+    private List<Node> pathTo(List<Node> path, double position) {
+        List<Node> head = new ArrayList<>(path.subList(0, (int) Math.floor(position) + 1));
+        Node end = pointAt(path, position);
+        if (!end.equals(head.get(head.size() - 1))) {
+            head.add(end);
+        }
+        return head;
     }
 
     private boolean sameEndpoints(GraphEdge edge, GraphNode from, GraphNode to) {
@@ -358,19 +446,43 @@ public class GraphBuilder {
         // runs last. Otherwise it can cascade along a street of closely
         // spaced corridor junctions and swallow the street's length.
         RouteGraph current = graph;
-        while (true) {
+        for (int pass = 0; ; pass++) {
+            String step = null;
             RouteGraph next = fuseNearbyEndpoints(current);
+            if (next != null) {
+                step = "fuseNearbyEndpoints";
+            }
             if (next == null) {
                 next = contractSharedChains(current);
+                if (next != null) {
+                    step = "contractSharedChains";
+                }
             }
             if (next == null) {
                 next = mergeParallelEdges(current);
+                if (next != null) {
+                    step = "mergeParallelEdges";
+                }
             }
             if (next == null) {
                 next = fuseCloseJunctions(current);
+                if (next != null) {
+                    step = "fuseCloseJunctions";
+                }
+            }
+            if (next == null) {
+                next = splitAtOverlaps(current);
+                if (next != null) {
+                    step = "splitAtOverlaps";
+                }
             }
             if (next == null) {
                 return current;
+            }
+            if (pass >= MAX_SIMPLIFY_PASSES) {
+                throw new IllegalStateException("simplify did not converge after "
+                        + MAX_SIMPLIFY_PASSES + " passes: " + step
+                        + " kept returning a new graph");
             }
             current = next;
         }
@@ -411,6 +523,261 @@ public class GraphBuilder {
     /** The constant offset we accept as GPS noise. */
     private double gpsOffsetMeters() {
         return GPS_OFFSET_FACTOR * toleranceMeters;
+    }
+
+    /** A stretch of one edge's path that stays within tolerance of another's. */
+    private record Overlap(double startPosition, double endPosition, double lengthMeters) {}
+
+    /**
+     * Two edges can run the same street for part of their length without ever
+     * meeting at a vertex; two recordings of one street that join at only one
+     * end are the usual case. The map then draws the stretch twice, and the
+     * edges merge and split with no junction where they fork.
+     * <p>
+     * A stretch of one edge's path that stays within the coincidence tolerance
+     * of the other's for longer than the GPS offset is such a fork. A shorter
+     * coincidence is a crossing or jitter: at that scale a junction would only
+     * mark noise, so it is left alone. A pair that already shares both vertices
+     * needs no fork either.
+     * <p>
+     * The pair is cut at the two ends of the coincident stretch and
+     * {@link #mergeParallelEdges} then folds the stretch into one shared edge.
+     * One pair per pass, so every split gets a full round of simplification.
+     */
+    private RouteGraph splitAtOverlaps(RouteGraph graph) {
+        List<GraphEdge> edges = graph.getEdges();
+        for (int i = 0; i < edges.size(); i++) {
+            for (int j = i + 1; j < edges.size(); j++) {
+                GraphEdge first = edges.get(i);
+                GraphEdge second = edges.get(j);
+                if (first.getFrom() == first.getTo() || second.getFrom() == second.getTo()) {
+                    continue; // self-loops follow their own path
+                }
+                if (sameEndpoints(first, second.getFrom(), second.getTo())) {
+                    continue; // the fork between them already is a vertex
+                }
+                Overlap overlap = longestCoincidence(first.getPath(), second.getPath());
+                if (overlap == null || overlap.lengthMeters() <= gpsOffsetMeters()) {
+                    continue;
+                }
+                RouteGraph split = splitAtForks(graph, first, second, overlap);
+                if (split != null) {
+                    return split;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * How close two edges must stay to count as the same street. Half the
+     * matching tolerance, not all of it: at the full tolerance a footpath
+     * beside a road still qualifies, and merging it would fold a different way
+     * onto the road and stop drawing it. Only paths that really lie on top of
+     * each other are merged here.
+     */
+    private double coincidenceMeters() {
+        return toleranceMeters / 2;
+    }
+
+    /**
+     * The longest stretch of {@code path} that lies within
+     * {@link #coincidenceMeters()} of {@code other} throughout, in path order;
+     * null when no point of the path is that close.
+     */
+    private Overlap longestCoincidence(List<Node> path, List<Node> other) {
+        Overlap longest = null;
+        int start = -1;
+        int lastInside = -1;
+        double arc = 0;
+        double startArc = 0;
+        double lastArc = 0;
+        for (int i = 0; i < path.size(); i++) {
+            if (i > 0) {
+                arc += path.get(i - 1).distanceTo(path.get(i));
+            }
+            if (distanceToPath(path.get(i), other) > coincidenceMeters()) {
+                if (start >= 0) {
+                    longest = longer(longest, new Overlap(start, lastInside, lastArc - startArc));
+                    start = -1;
+                }
+                continue;
+            }
+            if (start < 0) {
+                start = i;
+                startArc = arc;
+            }
+            lastInside = i;
+            lastArc = arc;
+        }
+        if (start >= 0) {
+            return longer(longest, new Overlap(start, lastInside, lastArc - startArc));
+        }
+        return longest;
+    }
+
+    private Overlap longer(Overlap longest, Overlap candidate) {
+        return longest == null || candidate.lengthMeters() > longest.lengthMeters()
+                ? candidate : longest;
+    }
+
+    /** Distance in meters from {@code point} to the nearest spot of a path. */
+    private double distanceToPath(Node point, List<Node> path) {
+        double min = Double.MAX_VALUE;
+        for (int i = 0; i < path.size() - 1; i++) {
+            min = Math.min(min, pointToSegmentMeters(point, path.get(i), path.get(i + 1), new double[1]));
+        }
+        return min;
+    }
+
+    /**
+     * Cuts both edges at the ends of their coincident stretch. An end where the
+     * two edges already share a vertex keeps it; every other end gets a new
+     * junction on the first edge's point, and the second edge is cut at its
+     * closest point to that junction. Returns null when a fork would have to
+     * move an edge's own end vertex: there is no point on that edge to cut at,
+     * and re-terminating the edge elsewhere would rewire what it connects.
+     * Also null when nothing would change — both ends already sit on shared
+     * vertices, or the pieces come out identical to the source edges — because
+     * a rebuild that changes nothing would make {@link #simplify} spin.
+     * <p>
+     * A fork closer than the GPS offset to an existing junction or to one of
+     * the edges' own end vertices is treated as already present: the pair is
+     * skipped. Cutting a second junction a few metres along the street would
+     * leave remainders that still overlap at the new fork, and the next pass
+     * would cut again, drifting junction by junction down the street.
+     */
+    private RouteGraph splitAtForks(RouteGraph graph, GraphEdge first, GraphEdge second,
+                                    Overlap overlap) {
+        List<Node> firstPath = first.getPath();
+        List<Node> secondPath = second.getPath();
+        List<Cut> firstCuts = new ArrayList<>();
+        List<Cut> secondCuts = new ArrayList<>();
+        List<GraphNode> junctions = new ArrayList<>();
+        for (double position : new double[] {overlap.startPosition(), overlap.endPosition()}) {
+            if (sharedEnd(first, second, position) != null) {
+                continue;
+            }
+            if (position <= 0 || position >= firstPath.size() - 1) {
+                return null;
+            }
+            GraphNode junction = new GraphNode(pointAt(firstPath, position), true);
+            double secondPosition = closestPosition(secondPath, junction.getLocation());
+            if (secondPosition <= 0 || secondPosition >= secondPath.size() - 1) {
+                return null;
+            }
+            if (forkAlreadyPresent(graph, first, second, junction.getLocation())) {
+                return null;
+            }
+            junctions.add(junction);
+            firstCuts.add(new Cut(position, junction));
+            secondCuts.add(new Cut(secondPosition, junction));
+        }
+        List<GraphEdge> firstPieces = cutIntoPieces(first, firstCuts);
+        List<GraphEdge> secondPieces = cutIntoPieces(second, secondCuts);
+        if (junctions.isEmpty()
+                || (sameEdge(first, firstPieces) && sameEdge(second, secondPieces))) {
+            return null;
+        }
+        List<GraphEdge> pieces = new ArrayList<>(firstPieces);
+        pieces.addAll(secondPieces);
+        return rebuild(graph, Map.of(), Set.of(), Set.of(first, second), junctions, pieces);
+    }
+
+    /**
+     * A fork spot that an existing junction or one of the edges' own end
+     * vertices already covers, measured in metres: two forks within the GPS
+     * offset of each other are the same place.
+     */
+    private boolean forkAlreadyPresent(RouteGraph graph, GraphEdge first, GraphEdge second,
+                                       Node fork) {
+        double limit = gpsOffsetMeters();
+        if (fork.distanceTo(first.getFrom().getLocation()) < limit
+                || fork.distanceTo(first.getTo().getLocation()) < limit
+                || fork.distanceTo(second.getFrom().getLocation()) < limit
+                || fork.distanceTo(second.getTo().getLocation()) < limit) {
+            return true;
+        }
+        return graph.getJunctions().stream()
+                .anyMatch(junction -> junction.getLocation().distanceTo(fork) < limit);
+    }
+
+    /** The cut left the edge unchanged: one piece, same vertices, same shape. */
+    private boolean sameEdge(GraphEdge edge, List<GraphEdge> pieces) {
+        return pieces.size() == 1
+                && sameEndpoints(edge, pieces.get(0).getFrom(), pieces.get(0).getTo())
+                && sameGeometry(edge.getPath(), pieces.get(0).getPath());
+    }
+
+    /** The vertex a fork already sits on, when both edges end there. */
+    private GraphNode sharedEnd(GraphEdge first, GraphEdge second, double position) {
+        if (position <= 0) {
+            return endsAt(second, first.getFrom()) ? first.getFrom() : null;
+        }
+        if (position >= first.getPath().size() - 1) {
+            return endsAt(second, first.getTo()) ? first.getTo() : null;
+        }
+        return null;
+    }
+
+    private boolean endsAt(GraphEdge edge, GraphNode vertex) {
+        return edge.getFrom() == vertex || edge.getTo() == vertex;
+    }
+
+    /** Fractional position of the point of a path closest to {@code point}. */
+    private double closestPosition(List<Node> path, Node point) {
+        double bestPosition = 0;
+        double bestDistance = Double.MAX_VALUE;
+        for (int i = 0; i < path.size() - 1; i++) {
+            double[] t = new double[1];
+            double distance = pointToSegmentMeters(point, path.get(i), path.get(i + 1), t);
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                bestPosition = i + t[0];
+            }
+        }
+        return bestPosition;
+    }
+
+    /**
+     * An edge cut into the pieces between its ends and the cuts, each piece
+     * terminated at its ends the way a freshly built segment is.
+     */
+    private List<GraphEdge> cutIntoPieces(GraphEdge edge, List<Cut> cuts) {
+        List<Cut> ordered = new ArrayList<>(cuts);
+        ordered.sort(java.util.Comparator.comparingDouble(Cut::position));
+        List<GraphEdge> pieces = new ArrayList<>();
+        double position = 0;
+        GraphNode vertex = edge.getFrom();
+        for (Cut cut : ordered) {
+            if (cut.position() > position) {
+                pieces.add(piece(edge, vertex, cut.vertex(),
+                        subPath(edge.getPath(), position, cut.position())));
+            }
+            position = cut.position();
+            vertex = cut.vertex();
+        }
+        int end = edge.getPath().size() - 1;
+        if (position < end) {
+            pieces.add(piece(edge, vertex, edge.getTo(), subPath(edge.getPath(), position, end)));
+        }
+        return pieces;
+    }
+
+    private GraphEdge piece(GraphEdge edge, GraphNode from, GraphNode to, List<Node> path) {
+        return newEdge(from, to, cutAtJunctionCircles(path, from, to),
+                edge.getRoutes(), edge.getTraversals());
+    }
+
+    /** The stretch of a path between two fractional positions, built as a segment is. */
+    private List<Node> subPath(List<Node> path, double from, double to) {
+        List<Node> piece = new ArrayList<>();
+        piece.add(pointAt(path, from));
+        for (int i = (int) Math.floor(from) + 1; i <= (int) Math.ceil(to) - 1; i++) {
+            piece.add(path.get(i));
+        }
+        piece.add(pointAt(path, to));
+        return piece;
     }
 
     /**
@@ -540,6 +907,12 @@ public class GraphBuilder {
     private RouteGraph rebuild(RouteGraph graph, Map<GraphNode, GraphNode> remap,
                                Set<GraphNode> removedVertices, Set<GraphEdge> removedEdges,
                                List<GraphEdge> extraEdges) {
+        return rebuild(graph, remap, removedVertices, removedEdges, List.of(), extraEdges);
+    }
+
+    private RouteGraph rebuild(RouteGraph graph, Map<GraphNode, GraphNode> remap,
+                               Set<GraphNode> removedVertices, Set<GraphEdge> removedEdges,
+                               List<GraphNode> extraVertices, List<GraphEdge> extraEdges) {
         RouteGraph result = new RouteGraph();
         for (GraphNode node : graph.getNodes()) {
             if (!remap.containsKey(node) && !removedVertices.contains(node)) {
@@ -565,6 +938,7 @@ public class GraphBuilder {
             }
             result.addEdge(newEdge(from, to, path, edge.getRoutes(), edge.getTraversals()));
         }
+        extraVertices.forEach(result::addExisting);
         extraEdges.forEach(result::addEdge);
         return result;
     }
