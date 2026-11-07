@@ -3,6 +3,7 @@ package com.cartographer.server.api;
 import com.cartographer.io.GpxRouteLoader;
 import com.cartographer.map.GraphBuilder;
 import com.cartographer.map.IntersectionFinder;
+import com.cartographer.map.KalmanTrackFilter;
 import com.cartographer.map.RouteGraph;
 import com.cartographer.model.Node;
 import com.cartographer.model.Route;
@@ -327,9 +328,10 @@ class GraphControllerTest {
 
         @Bean
         GraphService graphService(ServerProperties properties, GpxRouteLoader routeLoader,
-                                  IntersectionFinder intersectionFinder, GraphBuilder graphBuilder,
-                                  TileCache tileCache) {
-            return new GraphService(properties, routeLoader, intersectionFinder, graphBuilder, tileCache);
+                                  IntersectionFinder intersectionFinder, KalmanTrackFilter trackFilter,
+                                  GraphBuilder graphBuilder, TileCache tileCache) {
+            return new GraphService(properties, routeLoader, intersectionFinder, trackFilter, graphBuilder,
+                    tileCache);
         }
     }
 }

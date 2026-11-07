@@ -1,6 +1,7 @@
 package com.cartographer.server.tiles;
 
 import com.cartographer.map.GraphBuilder;
+import com.cartographer.map.KalmanTrackFilter;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -44,10 +45,14 @@ public final class RoutesFingerprint {
      * writes, layers it emits, property values on a feature. Tiles rendered under
      * another version fail the fingerprint and are rendered again.
      *
+     * <p>3 — track points are filtered by {@link KalmanTrackFilter} before the
+     * graph is built, so the same routes now render to the geometry that filter
+     * leaves behind.
+     *
      * <p>2 — edges cut at the junction circle with a spoke to the junction
      * coordinate, plus the {@code junctions} point layer.
      */
-    static final int TILE_FORMAT_VERSION = 2;
+    static final int TILE_FORMAT_VERSION = 3;
 
     /** Terminates each field fed into the digest, so a name ending in digits cannot merge with a size. */
     private static final byte FIELD_SEPARATOR = 0;

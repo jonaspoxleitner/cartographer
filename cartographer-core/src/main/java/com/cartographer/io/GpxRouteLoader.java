@@ -12,11 +12,13 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
 
 /**
  * Loads GPX 1.x files into {@link Route} objects.
  * Track points (trkpt) become the route's path nodes,
  * waypoints (wpt) become named waypoints.
+ * A point's optional {@code time} child becomes {@link Node#getTime()}.
  */
 @Component
 public class GpxRouteLoader {
@@ -79,7 +81,8 @@ public class GpxRouteLoader {
         String name = withName && point != null
                 ? childText(point, "name").orElse(null)
                 : null;
-        return new Node(lat, lon, elevation, name);
+        Instant time = childText(point, "time").map(Instant::parse).orElse(null);
+        return new Node(lat, lon, elevation, name, time);
     }
 
     private java.util.Optional<String> childText(Element parent, String tag) {

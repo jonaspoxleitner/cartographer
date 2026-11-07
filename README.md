@@ -24,7 +24,7 @@ java -jar cartographer-cli/target/cartographer-cli-1.0-SNAPSHOT.jar foo.gpx ... 
 The program prints route info, graph stats, and the merged graph as a vertex table plus section and adjacency lists, and writes an SVG map to `graph.svg`:
 
 ```
-komoot-1936580.gpx: 255 nodes, starting at (48,601587, 13,792207)
+komoot-1936580.gpx: 255 nodes (0 of 255 dropped as GPS spikes), starting at (48,601587, 13,792207)
 ...
 Simplified graph: 8 vertices (8 junctions, 0 endpoints), 12 edges (5 shared), 23,50 km total
 
@@ -243,10 +243,11 @@ mvn test
 ## How it works
 
 1. `GpxRouteLoader` parses GPX 1.x files into `Route` objects (ordered track `Node`s plus named waypoints) using the JDK's built-in XML parser. Files are parsed in parallel (one loader per file, encounter order preserved).
-2. `IntersectionFinder` clusters track points within the configured tolerance (10 m by default) of each other into intersections — across routes, and optionally within one route (self-crossings and out-and-back strands). Candidate pairs come from a spatial grid (near-linear instead of O(points²)) and the search runs in parallel per track point, so adding GPX files scales well. A dense out-and-back walk chains into one street-length cluster; when it splits into two passes that meet at both ends, the corridor's ends become junctions instead of dropping the cluster, so the graph merges the two legs into one street.
-3. `GraphBuilder` merges everything into a `RouteGraph`: intersections become junction vertices, route stretches between junctions become `GraphEdge`s, and sparse routes are cut at junctions they merely pass near (point-to-segment projection within a 40 m GPS offset).
-4. `GraphBuilder.simplify()` then normalizes the graph: fuses dangling endpoints into nearby junctions, contracts chains of corridor junctions (same street, several routes) into single edges, merges parallel edge duplicates, and fuses junctions closer than the GPS offset. Order is least-destructive first.
-5. An edge remembers how often it is traveled (`traversals`): shared by several routes, or retraced out-and-back by one. Shared edges are what the renderers highlight.
+2. `KalmanTrackFilter` then drops displaced track points: a constant-velocity Kalman model predicts where the next point should be, and a measurement that lands far from that prediction is a GPS spike or a short excursion, not a place the route went. Only accepted points reach the rest of the pipeline, and they keep their recorded coordinates — nothing is smoothed. The filter judges a point against its own track's neighbours, one track at a time, so each recording arrives at the graph as cleanly as it was recorded. Two details follow from that. A track without a single timestamp passes through unfiltered, because its spacing is unknown and every point after the first could look like a spike. And the gate widens with the sampling interval, so a sparse planner export (points 30 m apart) keeps its points while a dense 1 Hz recording is held to a gate of a few tens of metres. Clean recordings therefore lose nothing: on tidy consumer-GPS tracks the dropped count is typically zero, and the number is printed per file (and logged per rebuild by the server) so it is never a guess.
+3. `IntersectionFinder` clusters track points within the configured tolerance (10 m by default) of each other into intersections — across routes, and optionally within one route (self-crossings and out-and-back strands). Candidate pairs come from a spatial grid (near-linear instead of O(points²)) and the search runs in parallel per track point, so adding GPX files scales well. A dense out-and-back walk chains into one street-length cluster; when it splits into two passes that meet at both ends, the corridor's ends become junctions instead of dropping the cluster, so the graph merges the two legs into one street.
+4. `GraphBuilder` merges everything into a `RouteGraph`: intersections become junction vertices, route stretches between junctions become `GraphEdge`s, and sparse routes are cut at junctions they merely pass near (point-to-segment projection within a 40 m GPS offset).
+5. `GraphBuilder.simplify()` then normalizes the graph: fuses dangling endpoints into nearby junctions, contracts chains of corridor junctions (same street, several routes) into single edges, merges parallel edge duplicates, and fuses junctions closer than the GPS offset. Order is least-destructive first.
+6. An edge remembers how often it is traveled (`traversals`): shared by several routes, or retraced out-and-back by one. Shared edges are what the renderers highlight.
 
 ## Project layout
 
@@ -256,7 +257,8 @@ cartographer-core/                             # pipeline library, no Spring Boo
   src/main/java/com/cartographer/model/        # Node, Route
   src/main/java/com/cartographer/io/           # GpxRouteLoader
   src/main/java/com/cartographer/map/          # RouteGraph, GraphNode/Edge,
-                                               # IntersectionFinder, GraphBuilder
+                                               # IntersectionFinder, GraphBuilder,
+                                               # KalmanTrackFilter
   src/main/java/com/cartographer/ui/           # TextGraphRenderer, SvgGraphRenderer
   src/test/java/com/cartographer/              # JUnit 5 tests
 cartographer-cli/                              # command-line frontend, shaded executable jar

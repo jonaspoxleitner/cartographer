@@ -4,6 +4,7 @@ import com.cartographer.io.GpxRouteLoader;
 import com.cartographer.map.GraphBuilder;
 import com.cartographer.map.GraphEdge;
 import com.cartographer.map.IntersectionFinder;
+import com.cartographer.map.KalmanTrackFilter;
 import com.cartographer.map.RouteGraph;
 import com.cartographer.server.config.ServerProperties;
 import com.cartographer.server.tiles.MBTilesStore;
@@ -157,6 +158,7 @@ class GraphServiceTest {
                         TILE_CACHE_MIN_ZOOM, TILE_CACHE_MAX_ZOOM, TILE_CACHE_MAX_AGE_SECONDS, tilesFile()),
                 new GpxRouteLoader(),
                 new IntersectionFinder(TOLERANCE_METERS),
+                new KalmanTrackFilter(),
                 new GraphBuilder(TOLERANCE_METERS),
                 tileCache);
     }

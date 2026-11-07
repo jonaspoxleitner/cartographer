@@ -3,6 +3,7 @@ package com.cartographer.server.config;
 import com.cartographer.io.GpxRouteLoader;
 import com.cartographer.map.GraphBuilder;
 import com.cartographer.map.IntersectionFinder;
+import com.cartographer.map.KalmanTrackFilter;
 import com.cartographer.server.tiles.MBTilesStore;
 import com.cartographer.server.tiles.TileBuilder;
 import com.cartographer.server.tiles.TileCache;
@@ -13,8 +14,9 @@ import org.springframework.context.annotation.Configuration;
 /**
  * Wires the graph-building pipeline. The component scan is rooted in
  * {@code com.cartographer.server}, so core's components are not picked up
- * implicitly: the loader is declared here, and the tolerance-dependent beans
- * are built here because their tolerance is a constructor argument.
+ * implicitly: the loader and the track filter are declared here, and the
+ * tolerance-dependent beans are built here because their tolerance is a
+ * constructor argument.
  */
 @Configuration
 @EnableConfigurationProperties(ServerProperties.class)
@@ -23,6 +25,11 @@ public class ServerConfig {
     @Bean
     public GpxRouteLoader gpxRouteLoader() {
         return new GpxRouteLoader();
+    }
+
+    @Bean
+    public KalmanTrackFilter kalmanTrackFilter() {
+        return new KalmanTrackFilter();
     }
 
     @Bean

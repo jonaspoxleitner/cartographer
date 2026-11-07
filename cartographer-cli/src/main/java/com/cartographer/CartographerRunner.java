@@ -6,6 +6,7 @@ import com.cartographer.map.GraphBuilder;
 import com.cartographer.map.GraphEdge;
 import com.cartographer.map.Intersection;
 import com.cartographer.map.IntersectionFinder;
+import com.cartographer.map.KalmanTrackFilter;
 import com.cartographer.map.RouteGraph;
 import com.cartographer.model.Node;
 import com.cartographer.model.Route;
@@ -18,6 +19,7 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Stream;
 
@@ -28,16 +30,19 @@ public class CartographerRunner {
     private final CartographerProperties properties;
     private final GpxRouteLoader routeLoader;
     private final IntersectionFinder intersectionFinder;
+    private final KalmanTrackFilter trackFilter;
     private final GraphBuilder graphBuilder;
     private final TextGraphRenderer textRenderer;
     private final SvgGraphRenderer svgRenderer;
 
     public CartographerRunner(CartographerProperties properties, GpxRouteLoader routeLoader,
-                              IntersectionFinder intersectionFinder, GraphBuilder graphBuilder,
-                              TextGraphRenderer textRenderer, SvgGraphRenderer svgRenderer) {
+                              IntersectionFinder intersectionFinder, KalmanTrackFilter trackFilter,
+                              GraphBuilder graphBuilder, TextGraphRenderer textRenderer,
+                              SvgGraphRenderer svgRenderer) {
         this.properties = properties;
         this.routeLoader = routeLoader;
         this.intersectionFinder = intersectionFinder;
+        this.trackFilter = trackFilter;
         this.graphBuilder = graphBuilder;
         this.textRenderer = textRenderer;
         this.svgRenderer = svgRenderer;
@@ -66,15 +71,30 @@ public class CartographerRunner {
         List<Path> gpxFiles = resolveGpxFiles(args);
         // one parse per file: XML builders are single-threaded, so parsing
         // maps cleanly onto parallel tasks (encounter order is preserved)
-        List<Route> routes = gpxFiles.parallelStream().map(this::loadRoute).toList();
-        for (int i = 0; i < routes.size(); i++) {
-            Route route = routes.get(i);
+        List<Route> loaded = gpxFiles.parallelStream().map(this::loadRoute).toList();
+        List<Route> routes = new ArrayList<>(loaded.size());
+        for (int i = 0; i < loaded.size(); i++) {
+            Route route = loaded.get(i);
+            int recorded = route.getNodes().size();
+            dropDisplacedPoints(route);
+            int kept = route.getNodes().size();
             Node start = route.getNodes().get(0);
-            System.out.printf("%s: %d nodes, starting at (%.6f, %.6f)%n",
-                    gpxFiles.get(i).getFileName(), route.getNodes().size(),
+            System.out.printf("%s: %d nodes (%d of %d dropped as GPS spikes), starting at (%.6f, %.6f)%n",
+                    gpxFiles.get(i).getFileName(), kept, recorded - kept, recorded,
                     start.getLatitude(), start.getLongitude());
+            routes.add(route);
         }
         return routes;
+    }
+
+    /**
+     * Replaces the route's recorded track with the points the spike filter
+     * keeps, before anything downstream reads it.
+     */
+    private void dropDisplacedPoints(Route route) {
+        List<Node> kept = trackFilter.filter(route.getNodes());
+        route.getNodes().clear();
+        route.getNodes().addAll(kept);
     }
 
     private Route loadRoute(Path gpxFile) {

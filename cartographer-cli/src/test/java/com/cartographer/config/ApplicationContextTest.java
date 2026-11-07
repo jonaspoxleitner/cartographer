@@ -4,6 +4,7 @@ import com.cartographer.CartographerRunner;
 import com.cartographer.io.GpxRouteLoader;
 import com.cartographer.map.GraphBuilder;
 import com.cartographer.map.IntersectionFinder;
+import com.cartographer.map.KalmanTrackFilter;
 import com.cartographer.ui.SvgGraphRenderer;
 import com.cartographer.ui.TextGraphRenderer;
 import org.junit.jupiter.api.Test;
@@ -31,6 +32,7 @@ class ApplicationContextTest {
     void bootsWithPipelineBeans() {
         assertNotNull(context.getBean(GpxRouteLoader.class));
         assertNotNull(context.getBean(IntersectionFinder.class));
+        assertNotNull(context.getBean(KalmanTrackFilter.class));
         assertNotNull(context.getBean(GraphBuilder.class));
         assertNotNull(context.getBean(TextGraphRenderer.class));
         assertNotNull(context.getBean(SvgGraphRenderer.class));

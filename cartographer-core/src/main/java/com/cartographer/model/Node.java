@@ -1,10 +1,12 @@
 package com.cartographer.model;
 
+import java.time.Instant;
 import java.util.Objects;
 
 /**
  * A point on the map, defined by its geographic coordinates.
- * Nodes carry an optional elevation and name (e.g. for waypoints).
+ * Nodes carry an optional elevation and name (e.g. for waypoints), and an
+ * optional timestamp for points that came from a recorded track.
  */
 public class Node {
 
@@ -12,16 +14,21 @@ public class Node {
     private final double longitude;
     private final Double elevation;
     private final String name;
+    private final Instant time;
 
     public Node(double latitude, double longitude) {
-        this(latitude, longitude, null, null);
+        this(latitude, longitude, null, null, null);
     }
 
     public Node(double latitude, double longitude, Double elevation) {
-        this(latitude, longitude, elevation, null);
+        this(latitude, longitude, elevation, null, null);
     }
 
     public Node(double latitude, double longitude, Double elevation, String name) {
+        this(latitude, longitude, elevation, name, null);
+    }
+
+    public Node(double latitude, double longitude, Double elevation, String name, Instant time) {
         if (latitude < -90 || latitude > 90) {
             throw new IllegalArgumentException("Latitude out of range: " + latitude);
         }
@@ -32,6 +39,7 @@ public class Node {
         this.longitude = longitude;
         this.elevation = elevation;
         this.name = name;
+        this.time = time;
     }
 
     public double getLatitude() {
@@ -48,6 +56,14 @@ public class Node {
 
     public String getName() {
         return name;
+    }
+
+    /**
+     * Recording time of this point, or {@code null} for points that are not
+     * part of a time-stamped track (e.g. graph nodes or waypoints without time).
+     */
+    public Instant getTime() {
+        return time;
     }
 
     /**

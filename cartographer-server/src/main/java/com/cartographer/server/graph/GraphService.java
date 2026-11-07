@@ -5,7 +5,9 @@ import com.cartographer.map.GraphBuilder;
 import com.cartographer.map.GraphEdge;
 import com.cartographer.map.Intersection;
 import com.cartographer.map.IntersectionFinder;
+import com.cartographer.map.KalmanTrackFilter;
 import com.cartographer.map.RouteGraph;
+import com.cartographer.model.Node;
 import com.cartographer.model.Route;
 import com.cartographer.server.config.ServerProperties;
 import com.cartographer.server.tiles.RoutesFingerprint;
@@ -49,16 +51,19 @@ public class GraphService {
     private final ServerProperties properties;
     private final GpxRouteLoader routeLoader;
     private final IntersectionFinder intersectionFinder;
+    private final KalmanTrackFilter trackFilter;
     private final GraphBuilder graphBuilder;
     private final TileCache tileCache;
 
     private volatile RouteGraph graph;
 
     public GraphService(ServerProperties properties, GpxRouteLoader routeLoader,
-                        IntersectionFinder intersectionFinder, GraphBuilder graphBuilder, TileCache tileCache) {
+                        IntersectionFinder intersectionFinder, KalmanTrackFilter trackFilter,
+                        GraphBuilder graphBuilder, TileCache tileCache) {
         this.properties = properties;
         this.routeLoader = routeLoader;
         this.intersectionFinder = intersectionFinder;
+        this.trackFilter = trackFilter;
         this.graphBuilder = graphBuilder;
         this.tileCache = tileCache;
     }
@@ -89,10 +94,12 @@ public class GraphService {
         // one parse per file: XML builders are single-threaded, so parsing
         // maps cleanly onto parallel tasks (encounter order is preserved)
         List<Route> routes = gpxFiles.parallelStream().map(this::loadRoute).toList();
+        int droppedPoints = dropDisplacedPoints(routes);
         List<Intersection> intersections = intersectionFinder.findWithSelfIntersections(routes);
         RouteGraph simplified = graphBuilder.simplify(graphBuilder.build(routes, intersections));
         long rebuildMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAtNanos);
-        log.info("Loaded {} routes from {} in {} ms", routes.size(), routesDir.toAbsolutePath(), rebuildMillis);
+        log.info("Loaded {} routes from {} in {} ms, dropped {} track points as GPS spikes",
+                routes.size(), routesDir.toAbsolutePath(), rebuildMillis, droppedPoints);
         // tiles first, then the graph: the new graph must never be visible over the old tiles
         if (!tileCache.restore(fingerprint)) {
             tileCache.preRender(simplified);
@@ -122,6 +129,25 @@ public class GraphService {
         } catch (IOException ioException) {
             throw new UncheckedIOException("failed to parse " + gpxFile, ioException);
         }
+    }
+
+    /**
+     * Replaces every route's recorded track with the points the spike filter
+     * keeps, before anything downstream reads it, and returns how many points
+     * that dropped.
+     */
+    private int dropDisplacedPoints(List<Route> routes) {
+        int recorded = 0;
+        int kept = 0;
+        for (Route route : routes) {
+            List<Node> track = route.getNodes();
+            recorded += track.size();
+            List<Node> filtered = trackFilter.filter(track);
+            track.clear();
+            track.addAll(filtered);
+            kept += filtered.size();
+        }
+        return recorded - kept;
     }
 
     private void logGraphStats(RouteGraph graph) {
