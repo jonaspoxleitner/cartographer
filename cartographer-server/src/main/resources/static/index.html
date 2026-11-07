@@ -81,6 +81,7 @@
     <li><span class="swatch" style="height:3px;background:#9e9e9e"></span>traversed once</li>
     <li><span class="swatch" style="height:5px;background:#f0a500"></span>shared or retraced twice</li>
     <li><span class="swatch" style="height:7px;background:#e65100"></span>three times or more</li>
+    <li><span class="swatch" style="width:9px;height:9px;border-radius:50%;background:#1a1a1a"></span>junction</li>
   </ul>
   <form id="upload">
     <input type="file" id="file" accept=".gpx" required>
@@ -105,6 +106,7 @@
 
   const SOURCE_ID = 'graph';
   const EDGE_LAYER_ID = 'edges';
+  const JUNCTION_LAYER_ID = 'junctions';
   const TILEJSON_URL = '/tiles/tilejson.json';
 
   const statusLine = document.getElementById('status');
@@ -148,6 +150,23 @@
       'line-width': ['match', ['min', ['get', 'traversals'], 3],
         2, EDGE_STYLE[1].width, 3, EDGE_STYLE[2].width, EDGE_STYLE[0].width],
       'line-opacity': 0.9,
+    },
+  };
+
+  // The tiles publish one point per junction, placed at the same coordinate the
+  // edge paths end at, so a dot covers the meeting point of the lines.
+  // Zoom-interpolated radius: a small dot when a junction is a few pixels and a
+  // clearly clickable one at street level.
+  const junctionLayer = {
+    id: JUNCTION_LAYER_ID,
+    type: 'circle',
+    source: SOURCE_ID,
+    'source-layer': 'junctions',
+    paint: {
+      'circle-radius': ['interpolate', ['linear'], ['zoom'], 12, 1.5, 15, 3, 18, 5],
+      'circle-color': '#1a1a1a',
+      'circle-stroke-color': '#ffffff',
+      'circle-stroke-width': 1,
     },
   };
 
@@ -217,10 +236,12 @@
     const generation = ++tileGeneration;
     const tiles = tileJson.tiles.map(template => tileUrl(template, generation));
 
-    // Removing the source and its layer drops everything MapLibre has cached
+    // Removing the source and its layers drops everything MapLibre has cached
     // for it, which is what makes a re-added source request the new tiles.
-    if (map.getLayer(EDGE_LAYER_ID)) {
-      map.removeLayer(EDGE_LAYER_ID);
+    for (const layerId of [JUNCTION_LAYER_ID, EDGE_LAYER_ID]) {
+      if (map.getLayer(layerId)) {
+        map.removeLayer(layerId);
+      }
     }
     if (map.getSource(SOURCE_ID)) {
       map.removeSource(SOURCE_ID);
@@ -231,7 +252,9 @@
       minzoom: tileJson.minzoom,
       maxzoom: tileJson.maxzoom,
     });
+    // edges first, so the junction dots are drawn on top of the line ends
     map.addLayer(edgeLayer);
+    map.addLayer(junctionLayer);
 
     if (tileJson.bounds) {
       // Instant, like the Leaflet baseline's fitBounds: the graph should be in

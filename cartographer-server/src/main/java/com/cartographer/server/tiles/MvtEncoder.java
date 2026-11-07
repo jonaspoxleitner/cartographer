@@ -12,10 +12,11 @@ import java.util.Map;
  * and the geometry command encoding, with no tile library on the runtime
  * classpath.
  *
- * <p>One instance serialises one tile containing a single layer: the layer name,
- * features and their property tables. Features are added in tile-local
- * coordinates ({@code 0..extent}, y growing southward; the clipping buffer may
- * push coordinates slightly past the extent). An empty tile has zero layers and
+ * <p>One instance serialises one layer: the layer name, features and their
+ * property tables. Features are added in tile-local coordinates
+ * ({@code 0..extent}, y growing southward; the clipping buffer may push
+ * coordinates slightly past the extent). {@link #tile(List)} assembles the
+ * layers of several encoders into one tile. An empty tile has zero layers and
  * is therefore the empty byte array rather than the output of this class.
  */
 public final class MvtEncoder {
@@ -44,6 +45,8 @@ public final class MvtEncoder {
     private static final int VALUE_INT = 4;
     private static final int VALUE_BOOL = 7;
 
+    /** GeomType.POINT. */
+    private static final int GEOMETRY_POINT = 1;
     /** GeomType.LINESTRING. */
     private static final int GEOMETRY_LINESTRING = 2;
     /** Geometry command ids from the MVT spec. */
@@ -80,16 +83,51 @@ public final class MvtEncoder {
             throw new IllegalArgumentException(
                     "a line feature needs at least two points, got " + points.size());
         }
+        features.add(new Feature(GEOMETRY_LINESTRING, List.copyOf(points), tags(properties)));
+    }
+
+    /**
+     * Adds one point feature at a tile-local coordinate, for a symbol that marks
+     * a place rather than a path. Property values are interned into the layer's
+     * key/value tables, like a line feature's.
+     */
+    public void addPointFeature(TilePoint point, Map<String, MvtValue> properties) {
+        features.add(new Feature(GEOMETRY_POINT, List.of(point), tags(properties)));
+    }
+
+    private List<Integer> tags(Map<String, MvtValue> properties) {
         List<Integer> tags = new ArrayList<>(properties.size() * 2);
         for (Map.Entry<String, MvtValue> property : properties.entrySet()) {
             tags.add(keyIndex(property.getKey()));
             tags.add(valueIndex(property.getValue()));
         }
-        features.add(new Feature(List.copyOf(points), List.copyOf(tags)));
+        return List.copyOf(tags);
     }
 
-    /** Serialises the tile: one {@code Tile.Layer} message wrapped in the tile's bytes. */
+    /** Serialises the tile: this encoder's one {@code Tile.Layer} wrapped in the tile's bytes. */
     public byte[] toByteArray() {
+        ByteArrayOutputStream tile = new ByteArrayOutputStream();
+        writeMessageField(tile, TILE_LAYERS, layerBytes());
+        return tile.toByteArray();
+    }
+
+    /**
+     * Serialises several single-layer encoders into one tile: one
+     * {@code Tile.Layer} message per encoder, in the given order, so a tile can
+     * carry paths and the symbols that belong to them.
+     */
+    public static byte[] tile(List<MvtEncoder> layers) {
+        if (layers.isEmpty()) {
+            throw new IllegalArgumentException("a tile needs at least one layer");
+        }
+        ByteArrayOutputStream tile = new ByteArrayOutputStream();
+        for (MvtEncoder layer : layers) {
+            writeMessageField(tile, TILE_LAYERS, layer.layerBytes());
+        }
+        return tile.toByteArray();
+    }
+
+    private byte[] layerBytes() {
         ByteArrayOutputStream layer = new ByteArrayOutputStream();
         writeStringField(layer, LAYER_NAME, layerName);
         for (Feature feature : features) {
@@ -103,10 +141,7 @@ public final class MvtEncoder {
         }
         writeVarintField(layer, LAYER_EXTENT, extent);
         writeVarintField(layer, LAYER_VERSION, VERSION);
-
-        ByteArrayOutputStream tile = new ByteArrayOutputStream();
-        writeMessageField(tile, TILE_LAYERS, layer.toByteArray());
-        return tile.toByteArray();
+        return layer.toByteArray();
     }
 
     private int keyIndex(String key) {
@@ -127,9 +162,19 @@ public final class MvtEncoder {
         ByteArrayOutputStream body = new ByteArrayOutputStream();
         int[] tags = feature.tags().stream().mapToInt(Integer::intValue).toArray();
         writePackedVarints(body, FEATURE_TAGS, tags);
-        writeVarintField(body, FEATURE_TYPE, GEOMETRY_LINESTRING);
-        writePackedVarints(body, FEATURE_GEOMETRY, lineStringCommands(feature.points()));
+        writeVarintField(body, FEATURE_TYPE, feature.geometryType());
+        writePackedVarints(body, FEATURE_GEOMETRY, feature.geometryType() == GEOMETRY_POINT
+                ? pointCommands(feature.points().getFirst())
+                : lineStringCommands(feature.points()));
         return body.toByteArray();
+    }
+
+    /**
+     * Encodes a point as MVT geometry commands: a single MoveTo from the cursor's
+     * origin, with no LineTo and nothing to close.
+     */
+    static int[] pointCommands(TilePoint point) {
+        return new int[] {command(COMMAND_MOVE_TO, 1), zigZag(point.x()), zigZag(point.y())};
     }
 
     private static byte[] encodeValue(MvtValue value) {
@@ -227,8 +272,8 @@ public final class MvtEncoder {
     public record TilePoint(int x, int y) {
     }
 
-    /** A feature's path plus its interleaved key/value table indexes. */
-    private record Feature(List<TilePoint> points, List<Integer> tags) {
+    /** A feature's geometry type, its points and its interleaved key/value table indexes. */
+    private record Feature(int geometryType, List<TilePoint> points, List<Integer> tags) {
     }
 
     /**

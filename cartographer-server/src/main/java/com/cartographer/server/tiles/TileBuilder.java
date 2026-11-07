@@ -1,6 +1,7 @@
 package com.cartographer.server.tiles;
 
 import com.cartographer.map.GraphEdge;
+import com.cartographer.map.GraphNode;
 import com.cartographer.map.RouteGraph;
 import com.cartographer.model.Node;
 import com.cartographer.server.tiles.MvtEncoder.MvtValue;
@@ -23,15 +24,24 @@ import java.util.Map;
  * {@code edges} layer; consecutive points that round to the same integer are
  * dropped and a run left with fewer than two points is omitted.
  *
- * <p>A tile without any visible edge is the empty byte array — a vector tile
- * with zero layers — not an empty layer. The layer carries the edge properties
- * as {@code traversals}, {@code lengthMeters}, {@code shared} and
- * {@code routeCount} (MVT has no array type, so the route list is a count).
+ * <p>A tile without any visible edge or junction is the empty byte array — a
+ * vector tile with zero layers — not an empty layer. The {@code edges} layer
+ * carries the edge properties as {@code traversals}, {@code lengthMeters},
+ * {@code shared} and {@code routeCount} (MVT has no array type, so the route
+ * list is a count).
+ *
+ * <p>The {@code junctions} layer holds one point feature per junction vertex
+ * inside the buffered tile box, in the same tile-local coordinates as the paths,
+ * so a dot sits exactly on the shared endpoint of that junction's edges. It
+ * carries no properties.
  */
 public final class TileBuilder {
 
-    /** Name of the single layer every tile carries. */
+    /** Name of the layer every visible edge path is written to. */
     public static final String LAYER_NAME = "edges";
+
+    /** Name of the layer the junction dots are written to. */
+    public static final String JUNCTION_LAYER_NAME = "junctions";
 
     /** Default clip buffer around the tile box, in tile units of {@value SlippyMap#TILE_EXTENT}. */
     public static final int DEFAULT_BUFFER_UNITS = 64;
@@ -59,9 +69,9 @@ public final class TileBuilder {
     }
 
     /**
-     * The tile bytes for {@code x}/{@code y} at {@code zoom}: one feature per
-     * visible run of an edge path, or the empty byte array when no edge reaches
-     * the tile.
+     * The tile bytes for {@code x}/{@code y} at {@code zoom}: the visible runs of
+     * the edge paths and a dot for every junction reaching the tile, or the empty
+     * byte array when neither does.
      */
     public byte[] buildTile(RouteGraph graph, int zoom, int x, int y) {
         int tilesPerAxis = SlippyMap.tilesPerAxis(zoom);
@@ -70,20 +80,53 @@ public final class TileBuilder {
                     + " is outside 0.." + (tilesPerAxis - 1) + " at zoom " + zoom);
         }
 
-        MvtEncoder encoder = new MvtEncoder(LAYER_NAME, SlippyMap.TILE_EXTENT);
-        int featureCount = 0;
+        MvtEncoder edgeLayer = new MvtEncoder(LAYER_NAME, SlippyMap.TILE_EXTENT);
+        int edgeFeatures = 0;
         for (GraphEdge edge : graph.getEdges()) {
             List<List<TilePoint>> lines = clippedLines(edge, zoom, x, y);
             if (lines.isEmpty()) {
                 continue;
             }
-            Map<String, MvtValue> properties = properties(edge);
+            Map<String, MvtValue> properties = edgeProperties(edge);
             for (List<TilePoint> line : lines) {
-                encoder.addFeature(line, properties);
-                featureCount++;
+                edgeLayer.addFeature(line, properties);
+                edgeFeatures++;
             }
         }
-        return featureCount == 0 ? new byte[0] : encoder.toByteArray();
+
+        MvtEncoder junctionLayer = new MvtEncoder(JUNCTION_LAYER_NAME, SlippyMap.TILE_EXTENT);
+        int junctionFeatures = 0;
+        for (GraphNode junction : graph.getJunctions()) {
+            TilePoint point = junctionPoint(junction, zoom, x, y);
+            if (point != null) {
+                junctionLayer.addPointFeature(point, Map.of());
+                junctionFeatures++;
+            }
+        }
+
+        List<MvtEncoder> layers = new ArrayList<>(2);
+        if (edgeFeatures > 0) {
+            layers.add(edgeLayer);
+        }
+        if (junctionFeatures > 0) {
+            layers.add(junctionLayer);
+        }
+        return layers.isEmpty() ? new byte[0] : MvtEncoder.tile(layers);
+    }
+
+    /**
+     * The junction's tile-local coordinate, or {@code null} when it lies outside
+     * the buffered tile box. A junction's coordinate is the last point of every
+     * incident edge path, so the dot lands exactly on their shared endpoint.
+     */
+    private TilePoint junctionPoint(GraphNode junction, int zoom, int tileX, int tileY) {
+        double[] projected = project(junction.getLocation(), SlippyMap.tilesPerAxis(zoom), tileX, tileY);
+        double min = -bufferUnits;
+        double max = SlippyMap.TILE_EXTENT + bufferUnits;
+        if (projected[0] < min || projected[0] > max || projected[1] < min || projected[1] > max) {
+            return null;
+        }
+        return new TilePoint((int) Math.round(projected[0]), (int) Math.round(projected[1]));
     }
 
     /** The visible, collapsed runs of one edge inside the buffered tile box. */
@@ -201,7 +244,7 @@ public final class TileBuilder {
         }
     }
 
-    private static Map<String, MvtValue> properties(GraphEdge edge) {
+    private static Map<String, MvtValue> edgeProperties(GraphEdge edge) {
         Map<String, MvtValue> properties = new LinkedHashMap<>();
         properties.put("traversals", MvtValue.of(edge.getTraversals()));
         properties.put("lengthMeters", MvtValue.of(edge.getLengthMeters()));

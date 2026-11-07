@@ -74,6 +74,7 @@
     <li><span class="swatch" style="height:3px;background:#9e9e9e"></span>traversed once</li>
     <li><span class="swatch" style="height:5px;background:#f0a500"></span>shared or retraced twice</li>
     <li><span class="swatch" style="height:7px;background:#e65100"></span>three times or more</li>
+    <li><span class="swatch" style="width:9px;height:9px;border-radius:50%;background:#1a1a1a"></span>junction</li>
   </ul>
   <form id="upload">
     <input type="file" id="file" accept=".gpx" required>
@@ -104,10 +105,17 @@
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
   }).addTo(map);
 
+  // Edges are drawn from the LineString features; the Point features are the
+  // vertices, drawn as dots exactly where the edge paths end. Dots are filtered
+  // out of the edge layer so a click on one cannot open an edge popup.
   const graphLayer = L.geoJSON(null, {
+    filter: feature => feature.geometry.type !== 'Point',
     style: feature => edgeStyle(feature.properties.traversals),
     onEachFeature: (feature, layer) => layer.bindPopup(edgePopup(feature.properties)),
   }).addTo(map);
+
+  // Above the lines, so a junction dot covers the point where its edges meet.
+  const vertexLayer = L.layerGroup().addTo(map);
 
   function edgeStyle(traversals) {
     const style = EDGE_STYLES[Math.min(Math.max(traversals, 1), EDGE_STYLES.length) - 1];
@@ -118,6 +126,14 @@
       lineJoin: 'round',
       lineCap: 'round',
     };
+  }
+
+  function vertexStyle(isJunction) {
+    // Same distinction the SVG renderer makes: junctions prominent, route
+    // starts and finishes small.
+    return isJunction
+      ? {radius: 4, color: '#ffffff', weight: 1, fillColor: '#1a1a1a', fillOpacity: 1}
+      : {radius: 2.5, color: '#ffffff', weight: 1, fillColor: '#616161', fillOpacity: 1};
   }
 
   function edgePopup(properties) {
@@ -151,12 +167,22 @@
     }
     const featureCollection = await response.json();
     graphLayer.clearLayers();
+    vertexLayer.clearLayers();
     graphLayer.addData(featureCollection);
+    let edgeCount = 0;
+    for (const feature of featureCollection.features) {
+      if (feature.geometry.type === 'LineString') {
+        edgeCount += 1;
+        continue;
+      }
+      const [longitude, latitude] = feature.geometry.coordinates;
+      L.circleMarker([latitude, longitude], vertexStyle(feature.properties.junction)).addTo(vertexLayer);
+    }
     const bounds = graphLayer.getBounds();
     if (bounds.isValid()) {
       map.fitBounds(bounds, {padding: [20, 20]});
     }
-    return featureCollection.features.length;
+    return edgeCount;
   }
 
   refreshGraph()

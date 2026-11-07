@@ -3,6 +3,7 @@ package com.cartographer.server.tiles;
 import com.cartographer.map.GraphBuilder;
 import com.cartographer.map.GraphEdge;
 import com.cartographer.map.GraphNode;
+import com.cartographer.map.IntersectionFinder;
 import com.cartographer.map.RouteGraph;
 import com.cartographer.model.Node;
 import com.cartographer.model.Route;
@@ -16,10 +17,12 @@ import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.Geometry;
 import org.locationtech.jts.geom.GeometryFactory;
 import org.locationtech.jts.geom.LineString;
+import org.locationtech.jts.geom.Point;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
@@ -27,12 +30,13 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Round-trips tiles built from a tiny synthetic graph through the test-scope
  * {@code mapbox-vector-tile} decoder: clipping at a tile boundary, the seam
- * between neighbouring tiles, the buffer, the coordinate-collapse rule and the
- * edge properties.
+ * between neighbouring tiles, the buffer, the coordinate-collapse rule, the
+ * edge properties and the junction dots of the second layer.
  *
  * <p>The fixture sits in tile 14/8692/5766 (46.94°N 11.00°E) and is chosen so
  * the numbers come out round: the tile's centre line is tile-local x = 2048 and
@@ -167,6 +171,33 @@ class TileBuilderTest {
     }
 
     @Test
+    void junctionIsAPointWhereItsEdgesEnd() throws IOException {
+        byte[] tile = builder.buildTile(crossingGraph(), ZOOM, TILE_X, TILE_Y);
+
+        List<Point> dots = junctionPoints(tile);
+        List<LineString> lines = lines(tile);
+
+        assertEquals(1, dots.size(), "one dot for the junction, none for the route ends");
+        assertEquals(2048, (int) dots.get(0).getX(), "the crossing is the tile centre");
+        assertEquals(2048, (int) dots.get(0).getY(), "the crossing is the tile centre");
+        assertEquals(4, lines.size(), "the crossing cuts both routes in two");
+        for (LineString line : lines) {
+            assertTrue(Arrays.stream(line.getCoordinates())
+                            .anyMatch(coordinate -> coordinate.x == 2048 && coordinate.y == 2048),
+                    "every incident edge path ends at the junction dot");
+        }
+    }
+
+    @Test
+    void junctionOutsideTheTileAndBufferAddsNoDotAndNoLayer() throws IOException {
+        // four tiles east: the crossing, its spokes and every edge path are far outside the box
+        byte[] tile = builder.buildTile(crossingGraph(), ZOOM, TILE_X + 4, TILE_Y);
+
+        assertEquals(0, tile.length);
+        assertTrue(junctionPoints(tile).isEmpty());
+    }
+
+    @Test
     void clippedGeometryCarriesEdgeProperties() throws IOException {
         RouteGraph graph = sharedEdgeGraph();
         GraphEdge edge = graph.getEdges().get(0);
@@ -221,6 +252,26 @@ class TileBuilderTest {
         return graph;
     }
 
+    /**
+     * Two routes crossing at the fixture tile's centre, both carrying a track
+     * point there, so the real pipeline finds the junction: it sits at the
+     * crossing, and each of the four edge paths was cut at its 10 m circle and
+     * ends at the junction coordinate.
+     */
+    private static RouteGraph crossingGraph() {
+        List<Route> routes = List.of(
+                route("route-a", List.of(
+                        node(CENTER_LATITUDE, CENTER_LONGITUDE - TILE_WIDTH_DEGREES / 4),
+                        node(CENTER_LATITUDE, CENTER_LONGITUDE),
+                        node(CENTER_LATITUDE, CENTER_LONGITUDE + TILE_WIDTH_DEGREES / 4))),
+                route("route-b", List.of(
+                        node(CENTER_LATITUDE + 0.00375, CENTER_LONGITUDE),
+                        node(CENTER_LATITUDE, CENTER_LONGITUDE),
+                        node(CENTER_LATITUDE - 0.00375, CENTER_LONGITUDE))));
+        GraphBuilder graphBuilder = new GraphBuilder(10.0);
+        return graphBuilder.simplify(graphBuilder.build(routes, new IntersectionFinder(10.0).find(routes)));
+    }
+
     private static Route route(String name, List<Node> path) {
         Route route = new Route(name);
         path.forEach(route::addNode);
@@ -238,15 +289,31 @@ class TileBuilderTest {
     }
 
     private static List<LineString> lines(byte[] tile) throws IOException {
-        JtsMvt decoded = MvtReader.loadMvt(new ByteArrayInputStream(tile),
-                new GeometryFactory(), new TagKeyValueMapConverter(true));
-        JtsLayer layer = decoded.getLayer(TileBuilder.LAYER_NAME);
+        JtsLayer layer = decode(tile).getLayer(TileBuilder.LAYER_NAME);
         assertNotNull(layer, "tile has no " + TileBuilder.LAYER_NAME + " layer");
         List<LineString> lines = new ArrayList<>();
         for (Geometry geometry : layer.getGeometries()) {
             lines.add((LineString) geometry);
         }
         return lines;
+    }
+
+    /** The decoded junction dots; empty when the tile carries no {@code junctions} layer. */
+    private static List<Point> junctionPoints(byte[] tile) throws IOException {
+        JtsLayer layer = decode(tile).getLayer(TileBuilder.JUNCTION_LAYER_NAME);
+        if (layer == null) {
+            return List.of();
+        }
+        List<Point> points = new ArrayList<>();
+        for (Geometry geometry : layer.getGeometries()) {
+            points.add((Point) geometry);
+        }
+        return points;
+    }
+
+    private static JtsMvt decode(byte[] tile) throws IOException {
+        return MvtReader.loadMvt(new ByteArrayInputStream(tile), new GeometryFactory(),
+                new TagKeyValueMapConverter(true));
     }
 
     private static LineString onlyLine(byte[] tile) throws IOException {

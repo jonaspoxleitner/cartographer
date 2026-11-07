@@ -5,6 +5,7 @@ import com.cartographer.model.Route;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -12,6 +13,8 @@ import static org.junit.jupiter.api.Assertions.*;
 class GraphBuilderTest {
 
     private static final double TOLERANCE = 10.0;
+    // GraphBuilder cuts edge ends at this radius around a junction coordinate
+    private static final double JUNCTION_RADIUS = 5.0;
     // 0.001 deg latitude ~ 111 m
 
     private Route route(Node... nodes) {
@@ -23,8 +26,169 @@ class GraphBuilderTest {
     }
 
     private RouteGraph build(List<Route> routes) {
-        List<Intersection> intersections = new IntersectionFinder(TOLERANCE).find(routes);
-        return new GraphBuilder(TOLERANCE).build(routes, intersections);
+        return build(routes, TOLERANCE);
+    }
+
+    private RouteGraph build(List<Route> routes, double tolerance) {
+        List<Intersection> intersections = new IntersectionFinder(tolerance).find(routes);
+        return new GraphBuilder(tolerance).build(routes, intersections);
+    }
+
+    /** Edge path oriented so that it starts at {@code vertex}. */
+    private List<Node> pathFrom(GraphEdge edge, GraphNode vertex) {
+        List<Node> path = new ArrayList<>(edge.getPath());
+        if (edge.getFrom() != vertex) {
+            Collections.reverse(path);
+        }
+        return path;
+    }
+
+    @Test
+    void junctionEdgesEndAtTheJunctionCoordinateWithACircleCrossing() {
+        Node start = new Node(48.0000, 13.0);
+        Node junctionPoint = new Node(48.0010, 13.0);
+        Node finish = new Node(48.0030, 13.0);
+        Route a = route(start, junctionPoint, finish);
+        Route b = route(junctionPoint, new Node(48.0005, 13.0008));
+
+        RouteGraph graph = build(List.of(a, b));
+
+        assertEquals(1, graph.getJunctions().size());
+        GraphNode junction = graph.getJunctions().get(0);
+        assertEquals(junctionPoint, junction.getLocation());
+        assertEquals(3, graph.edgesFrom(junction).size());
+        for (GraphEdge edge : graph.edgesFrom(junction)) {
+            List<Node> path = pathFrom(edge, junction);
+            assertEquals(junction.getLocation(), path.get(0),
+                    () -> "edge must start at the junction coordinate: " + path);
+            assertEquals(JUNCTION_RADIUS, path.get(1).distanceTo(junction.getLocation()), 0.05,
+                    () -> "the second point must sit on the junction circle: " + path);
+            for (Node node : path.subList(2, path.size())) {
+                assertTrue(node.distanceTo(junction.getLocation()) > JUNCTION_RADIUS - 0.05,
+                        () -> "points inside the junction circle must be cut away: " + path);
+            }
+        }
+    }
+
+    @Test
+    void nonJunctionEndsKeepTheirRecordedTrackPoints() {
+        Node start = new Node(48.0000, 13.0);
+        Node junctionPoint = new Node(48.0010, 13.0);
+        Node finish = new Node(48.0030, 13.0);
+        Route a = route(start, junctionPoint, finish);
+        Route b = route(new Node(48.0005, 13.0008), junctionPoint);
+
+        RouteGraph graph = build(List.of(a, b));
+
+        for (GraphEdge edge : graph.getEdges()) {
+            // Every end meets its vertex: junction ends at the junction
+            // coordinate, route starts and finishes at the recorded point.
+            assertEquals(edge.getFrom().getLocation(), edge.getPath().get(0),
+                    () -> "edge must start at its from-vertex: " + edge);
+            assertEquals(edge.getTo().getLocation(), edge.getPath().get(edge.getPath().size() - 1),
+                    () -> "edge must end at its to-vertex: " + edge);
+        }
+        GraphNode junction = graph.getJunctions().get(0);
+        for (GraphEdge edge : graph.edgesFrom(junction)) {
+            GraphNode other = edge.otherEnd(junction);
+            assertFalse(other.isJunction());
+            List<Node> path = pathFrom(edge, other);
+            assertEquals(other.getLocation(), path.get(0));
+        }
+    }
+
+    @Test
+    void edgeFullyInsideTheJunctionCircleIsUnchanged() {
+        // A junction circle wider than the matching tolerance is what makes
+        // this case possible: a point can lie inside the circle and still be
+        // too far from every cluster point to join the cluster. A narrow
+        // tolerance keeps the cluster tight while the 5 m circle reaches past
+        // it, so the whole spur of route c lies inside the circle and there is
+        // nothing to cut.
+        double tolerance = 2.0;
+        Node p0 = new Node(48.0000, 13.0);
+        Node clusterPointA = new Node(48.0010, 13.0);
+        Node clusterPointB = new Node(48.00101441, 13.0); // ~1.6 m north
+        Node p2 = new Node(48.0030, 13.0);
+        Route a = route(p0, clusterPointA, p2);
+        Route b = route(new Node(48.0000, 13.0008), clusterPointB, new Node(48.0025, 13.0008));
+        Node insideEnd = new Node(48.00100720, 13.00005370); // ~4 m east of the centroid
+        Route c = route(insideEnd, clusterPointA);
+
+        RouteGraph graph = build(List.of(a, b, c), tolerance);
+
+        assertEquals(1, graph.getJunctions().size());
+        GraphNode junction = graph.getJunctions().get(0);
+        Node centroid = junction.getLocation();
+        assertTrue(insideEnd.distanceTo(centroid) < JUNCTION_RADIUS,
+                "route c's end must lie inside the junction circle");
+        assertTrue(insideEnd.distanceTo(clusterPointA) > tolerance
+                        && insideEnd.distanceTo(clusterPointB) > tolerance,
+                "route c's end must stay outside the junction cluster");
+
+        GraphEdge spur = graph.edgesFrom(junction).stream()
+                .filter(edge -> edge.otherEnd(junction).getLocation().equals(insideEnd))
+                .findFirst().orElseThrow();
+        assertEquals(List.of(clusterPointA, insideEnd), pathFrom(spur, junction),
+                "a spur whose whole path is inside the circle keeps its track points");
+    }
+
+    @Test
+    void simplifiedEdgeEndsFollowFusedVertices() {
+        Node junctionPoint = new Node(48.0010, 13.0);
+        Route a = route(new Node(48.0000, 13.0), junctionPoint, new Node(48.0020, 13.0));
+        Route b = route(junctionPoint, new Node(48.0030, 13.0));
+        // loop route whose start/finish sit ~22 m from the junction: too far
+        // to join the cluster, close enough to be the same place (fused)
+        Node loopStart = new Node(48.0010, 13.00030);
+        Node loopEnd = new Node(48.0010, 13.00036);
+        Route loop = route(loopStart, new Node(48.0025, 13.00030), loopEnd);
+        // two junctions ~17 m apart on the same street: one fused into the other
+        Node nearA = new Node(48.00500, 13.0);
+        Node nearB = new Node(48.00515, 13.0);
+        Route d = route(new Node(48.00400, 13.0), nearA, nearB, new Node(48.00600, 13.0));
+        Route e = route(new Node(48.00400, 13.0006), new Node(48.00500, 13.0),
+                new Node(48.00515, 13.0), new Node(48.00600, 13.0006));
+
+        RouteGraph simplified = new GraphBuilder(TOLERANCE)
+                .simplify(build(List.of(a, b, loop, d, e)));
+
+        assertEquals(2, simplified.getJunctions().size(),
+                () -> "vertices: " + simplified.getNodes());
+        for (GraphEdge edge : simplified.getEdges()) {
+            List<Node> path = edge.getPath();
+            assertEquals(edge.getFrom().getLocation(), path.get(0),
+                    () -> "fused edge must start at its vertex: " + edge);
+            assertEquals(edge.getTo().getLocation(), path.get(path.size() - 1),
+                    () -> "fused edge must end at its vertex: " + edge);
+        }
+        // folding the loop's start into the junction keeps the recorded point
+        // as the outer end of the spoke
+        assertTrue(simplified.getEdges().stream()
+                        .anyMatch(edge -> edge.getPath().contains(loopStart)),
+                () -> "the folded point should stay in the path: " + simplified.getEdges());
+    }
+
+    @Test
+    void buildsFromTheSameRoutesAreIdentical() {
+        Route a = route(new Node(48.0000, 13.0), new Node(48.0010, 13.0),
+                new Node(48.0020, 13.0), new Node(48.0030, 13.0));
+        Route b = route(new Node(48.0025, 13.0008), new Node(48.0020, 13.0),
+                new Node(48.0010, 13.0), new Node(48.0010, 13.0006));
+
+        RouteGraph first = build(List.of(a, b));
+        RouteGraph second = build(List.of(a, b));
+
+        assertEquals(first.getEdges().size(), second.getEdges().size());
+        for (int i = 0; i < first.getEdges().size(); i++) {
+            List<Node> expected = first.getEdges().get(i).getPath();
+            List<Node> actual = second.getEdges().get(i).getPath();
+            assertEquals(expected.size(), actual.size(), "edge " + i + " point count");
+            for (int j = 0; j < expected.size(); j++) {
+                assertEquals(expected.get(j), actual.get(j),
+                        "edge " + i + " point " + j);
+            }
+        }
     }
 
     @Test
@@ -304,11 +468,15 @@ class GraphBuilderTest {
         assertEquals(2, shared.get(0).getTraversals());
         assertEquals(1, shared.get(0).getRoutes().size());
         // one pass over the 100 m street, extended by the legs that chain
-        // around the turnaround, not the two legs' 200 m side by side
-        assertEquals(127, shared.get(0).getLengthMeters(), 5,
+        // around the turnaround, not the two legs' 200 m side by side. The
+        // junction-circle cut straightens the ends, so the street is a bit
+        // shorter than its raw track.
+        assertEquals(138, shared.get(0).getLengthMeters(), 5,
                 () -> "one street length, not two: " + shared.get(0));
-        // 176 m spur + 127 m corridor + 76 m turnaround stub + 174 m spur
-        assertEquals(553, graph.totalLengthMeters(), 15,
+        // 185 m spur + 138 m corridor + 76 m turnaround stub + 183 m spur;
+        // the spurs keep a spoke to their junction coordinate, so each is a
+        // little longer than the recorded leg
+        assertEquals(582, graph.totalLengthMeters(), 15,
                 () -> "street counted twice: " + graph.getEdges());
     }
 

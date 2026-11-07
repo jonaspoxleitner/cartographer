@@ -1,5 +1,6 @@
 package com.cartographer.server.tiles;
 
+import com.cartographer.map.GraphBuilder;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -10,6 +11,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * The fingerprint decides whether a start reuses the stored tiles or renders
@@ -48,6 +50,29 @@ class RoutesFingerprintTest {
         assertNotEquals(fingerprint, fingerprintOf(files, TOLERANCE_METERS, BUFFER_UNITS + 1, MIN_ZOOM, MAX_ZOOM));
         assertNotEquals(fingerprint, fingerprintOf(files, TOLERANCE_METERS, BUFFER_UNITS, MIN_ZOOM + 1, MAX_ZOOM));
         assertNotEquals(fingerprint, fingerprintOf(files, TOLERANCE_METERS, BUFFER_UNITS, MIN_ZOOM, MAX_ZOOM - 1));
+    }
+
+    @Test
+    void theJunctionCircleRadiusIsPartOfTheFingerprint() {
+        List<String> fields = RoutesFingerprint.fields(List.of(), TOLERANCE_METERS, BUFFER_UNITS, MIN_ZOOM,
+                MAX_ZOOM, RoutesFingerprint.TILE_FORMAT_VERSION);
+
+        assertTrue(fields.contains("junction-circle-radius-meters=" + GraphBuilder.JUNCTION_CIRCLE_RADIUS_METERS),
+                () -> "the radius decides where edges end, so it must invalidate stored tiles: " + fields);
+    }
+
+    @Test
+    void aChangedTileFormatVersionInvalidatesTheFingerprint() throws IOException {
+        List<Path> files = routeFiles();
+
+        String current = RoutesFingerprint.of(files, TOLERANCE_METERS, BUFFER_UNITS, MIN_ZOOM, MAX_ZOOM);
+
+        assertEquals(current, RoutesFingerprint.of(files, TOLERANCE_METERS, BUFFER_UNITS, MIN_ZOOM, MAX_ZOOM,
+                        RoutesFingerprint.TILE_FORMAT_VERSION),
+                "the public fingerprint is the one of the current tile format");
+        assertNotEquals(current, RoutesFingerprint.of(files, TOLERANCE_METERS, BUFFER_UNITS, MIN_ZOOM, MAX_ZOOM,
+                        RoutesFingerprint.TILE_FORMAT_VERSION + 1),
+                "tiles rendered by another build's geometry must be rendered again");
     }
 
     private List<Path> routeFiles() throws IOException {

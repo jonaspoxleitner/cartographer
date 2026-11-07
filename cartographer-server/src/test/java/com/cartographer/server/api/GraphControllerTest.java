@@ -33,8 +33,11 @@ import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -115,20 +118,15 @@ class GraphControllerTest {
     }
 
     @Test
-    void graphEndpointServesTheBuiltGraphAsGeoJsonEdges() throws Exception {
-        String body = mockMvc.perform(get("/api/graph"))
-                .andExpect(status().isOk())
-                .andExpect(content().contentType(GEO_JSON))
-                .andReturn().getResponse().getContentAsString();
+    void graphEndpointServesTheBuiltGraphAsGeoJsonEdgesAndVertexPoints() throws Exception {
+        JsonNode featureCollection = graphJson();
 
-        JsonNode featureCollection = objectMapper.readTree(body);
         assertEquals("FeatureCollection", featureCollection.path("type").asText());
-        JsonNode features = featureCollection.path("features");
-        assertEquals(4, features.size(), "route-a cut at the crossing plus route-b's two halves");
+        List<JsonNode> edges = featuresOfType(featureCollection, "LineString");
+        assertEquals(4, edges.size(), "route-a cut at the crossing plus route-b's two halves");
 
-        for (JsonNode feature : features) {
+        for (JsonNode feature : edges) {
             assertEquals("Feature", feature.path("type").asText());
-            assertEquals("LineString", feature.path("geometry").path("type").asText());
 
             JsonNode properties = feature.path("properties");
             assertEquals(1, properties.path("traversals").asInt());
@@ -142,18 +140,38 @@ class GraphControllerTest {
                 assertEquals(48.0, position.get(1).asDouble(), 0.01);
             }
         }
+
+        List<JsonNode> vertices = featuresOfType(featureCollection, "Point");
+        assertEquals(5, vertices.size(), "four route ends plus the junction where the routes cross");
+        Set<String> edgeEndpoints = edgeEndpoints(edges);
+        for (JsonNode vertex : vertices) {
+            assertEquals("Feature", vertex.path("type").asText());
+            JsonNode position = vertex.path("geometry").path("coordinates");
+            assertEquals(2, position.size(), "a Point carries one position");
+            assertTrue(edgeEndpoints.contains(positionKey(position)),
+                    "a vertex Point sits exactly on an edge endpoint: " + position);
+        }
+
+        List<JsonNode> junctionVertices = vertices.stream()
+                .filter(vertex -> vertex.path("properties").path("junction").asBoolean())
+                .toList();
+        assertEquals(1, junctionVertices.size(), "one junction, four route ends");
+        JsonNode junctionPosition = junctionVertices.get(0).path("geometry").path("coordinates");
+        assertEquals(13.002, junctionPosition.get(0).asDouble(), 1e-6);
+        assertEquals(48.0, junctionPosition.get(1).asDouble(), 1e-6);
     }
 
     @Test
     void geoJsonMarksEdgesTraveledMoreThanOnceAsShared() {
         GeoJsonMapper.FeatureCollection featureCollection = new GeoJsonMapper().toFeatureCollection(overlappingGraph());
 
-        List<GeoJsonMapper.Feature> shared = featureCollection.features().stream()
-                .filter(feature -> feature.properties().shared()).toList();
+        List<GeoJsonMapper.EdgeProperties> shared = edgeProperties(featureCollection).stream()
+                .filter(GeoJsonMapper.EdgeProperties::shared)
+                .toList();
         assertFalse(shared.isEmpty(), "two routes on one street share edges");
-        for (GeoJsonMapper.Feature feature : shared) {
-            assertTrue(feature.properties().traversals() > 1);
-            assertEquals(List.of("Route X", "Route Y"), feature.properties().routes());
+        for (GeoJsonMapper.EdgeProperties properties : shared) {
+            assertTrue(properties.traversals() > 1);
+            assertEquals(List.of("Route X", "Route Y"), properties.routes());
         }
     }
 
@@ -214,9 +232,50 @@ class GraphControllerTest {
     }
 
     private void assertEdgeCount(int expected) throws Exception {
-        mockMvc.perform(get("/api/graph"))
+        assertEquals(expected, featuresOfType(graphJson(), "LineString").size());
+    }
+
+    private JsonNode graphJson() throws Exception {
+        String body = mockMvc.perform(get("/api/graph"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.features.length()").value(expected));
+                .andExpect(content().contentType(GEO_JSON))
+                .andReturn().getResponse().getContentAsString();
+        return objectMapper.readTree(body);
+    }
+
+    /** The features whose geometry is of {@code geometryType}, in document order. */
+    private static List<JsonNode> featuresOfType(JsonNode featureCollection, String geometryType) {
+        List<JsonNode> features = new ArrayList<>();
+        for (JsonNode feature : featureCollection.path("features")) {
+            if (geometryType.equals(feature.path("geometry").path("type").asText())) {
+                features.add(feature);
+            }
+        }
+        return features;
+    }
+
+    /** Every edge path end as a comparable coordinate key. */
+    private static Set<String> edgeEndpoints(List<JsonNode> edges) {
+        Set<String> endpoints = new HashSet<>();
+        for (JsonNode edge : edges) {
+            JsonNode coordinates = edge.path("geometry").path("coordinates");
+            endpoints.add(positionKey(coordinates.get(0)));
+            endpoints.add(positionKey(coordinates.get(coordinates.size() - 1)));
+        }
+        return endpoints;
+    }
+
+    private static String positionKey(JsonNode position) {
+        return position.get(0).asDouble() + "," + position.get(1).asDouble();
+    }
+
+    private static List<GeoJsonMapper.EdgeProperties> edgeProperties(
+            GeoJsonMapper.FeatureCollection featureCollection) {
+        return featureCollection.features().stream()
+                .map(GeoJsonMapper.Feature::properties)
+                .filter(GeoJsonMapper.EdgeProperties.class::isInstance)
+                .map(GeoJsonMapper.EdgeProperties.class::cast)
+                .toList();
     }
 
     /** Two routes overlapping on one street — the same shape core's GraphBuilderTest covers. */

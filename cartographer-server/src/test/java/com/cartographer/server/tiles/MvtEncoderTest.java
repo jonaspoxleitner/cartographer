@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.GeometryFactory;
 import org.locationtech.jts.geom.LineString;
+import org.locationtech.jts.geom.Point;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -22,6 +23,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -65,6 +67,12 @@ class MvtEncoderTest {
     }
 
     @Test
+    void pointCommandsAreASingleMoveTo() {
+        // one MoveTo(1) from the cursor origin, no LineTo and no ClosePath
+        assertArrayEquals(new int[] {9, 4, 4}, MvtEncoder.pointCommands(new TilePoint(2, 2)));
+    }
+
+    @Test
     void encodesMinimalTileByteForByte() {
         MvtEncoder encoder = new MvtEncoder("l", SlippyMap.TILE_EXTENT);
         encoder.addFeature(List.of(new TilePoint(2, 2), new TilePoint(2, 10), new TilePoint(10, 10)),
@@ -75,6 +83,51 @@ class MvtEncoderTest {
         //   extent 4096, version 2 } }
         assertEquals("1a160a016c120c1802220809040412001010002880207802",
                 HEX.formatHex(encoder.toByteArray()));
+    }
+
+    @Test
+    void encodesPointFeatureByteForByte() {
+        MvtEncoder encoder = new MvtEncoder("l", SlippyMap.TILE_EXTENT);
+        encoder.addPointFeature(new TilePoint(2, 2), Map.of());
+
+        // Tile.layers { Layer {
+        //   name "l", Feature { type POINT, geometry [9,4,4] }, extent 4096, version 2 } }
+        assertEquals("1a110a016c1207180122030904042880207802",
+                HEX.formatHex(encoder.toByteArray()));
+    }
+
+    @Test
+    void decoderOracleRoundTripsAPointAsAPoint() throws IOException {
+        MvtEncoder encoder = new MvtEncoder("junctions", SlippyMap.TILE_EXTENT);
+        encoder.addPointFeature(new TilePoint(2048, 1024), Map.of());
+        byte[] tile = encoder.toByteArray();
+
+        VectorTile.Tile.Layer layer = VectorTile.Tile.parseFrom(tile).getLayers(0);
+        assertEquals(VectorTile.Tile.GeomType.POINT, layer.getFeatures(0).getType());
+
+        JtsMvt decoded = decode(tile);
+        Point point = (Point) decoded.getLayer("junctions").getGeometries().iterator().next();
+        assertEquals(2048, (int) point.getX());
+        assertEquals(1024, (int) point.getY());
+    }
+
+    @Test
+    void oneTileCarriesOneLayerPerEncoderInTheGivenOrder() throws IOException {
+        MvtEncoder edges = new MvtEncoder("edges", SlippyMap.TILE_EXTENT);
+        edges.addFeature(List.of(new TilePoint(0, 0), new TilePoint(10, 10)), Map.of());
+        MvtEncoder junctions = new MvtEncoder("junctions", SlippyMap.TILE_EXTENT);
+        junctions.addPointFeature(new TilePoint(5, 5), Map.of());
+
+        byte[] tile = MvtEncoder.tile(List.of(edges, junctions));
+
+        VectorTile.Tile parsed = VectorTile.Tile.parseFrom(tile);
+        assertEquals(2, parsed.getLayersCount());
+        assertEquals("edges", parsed.getLayers(0).getName());
+        assertEquals("junctions", parsed.getLayers(1).getName());
+        JtsMvt decoded = decode(tile);
+        assertNotNull(decoded.getLayer("edges"));
+        assertNotNull(decoded.getLayer("junctions"));
+        assertThrows(IllegalArgumentException.class, () -> MvtEncoder.tile(List.of()));
     }
 
     @Test
@@ -143,6 +196,11 @@ class MvtEncoderTest {
         assertThrows(IllegalArgumentException.class, () -> new MvtEncoder(" ", SlippyMap.TILE_EXTENT));
         assertThrows(IllegalArgumentException.class, () -> new MvtEncoder("edges", 0));
         assertTrue(encoder.toByteArray().length > 0);
+    }
+
+    private static JtsMvt decode(byte[] tile) throws IOException {
+        return MvtReader.loadMvt(new ByteArrayInputStream(tile), new GeometryFactory(),
+                new TagKeyValueMapConverter(true));
     }
 
     private static void assertVarint(String expectedHex, long value) {

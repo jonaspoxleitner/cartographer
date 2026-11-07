@@ -25,6 +25,14 @@ public class GraphBuilder {
     // GPS inaccuracy of ~10 m per side, plus cut-point drift.
     private static final double GPS_OFFSET_FACTOR = 4.0;
 
+    // Edges end this far from the junction coordinate and continue as a
+    // straight spoke to it, so every edge meeting at a junction terminates
+    // at the identical vertex. Which track point a route happened to record
+    // inside the junction cluster no longer leaks into the drawn geometry.
+    // Public because it decides stored tile bytes: the server feeds it into
+    // the fingerprint of its tile store, so changing it re-renders them.
+    public static final double JUNCTION_CIRCLE_RADIUS_METERS = 5.0;
+
     private final double toleranceMeters;
 
     public GraphBuilder(double toleranceMeters) {
@@ -195,6 +203,8 @@ public class GraphBuilder {
             return;
         }
 
+        path = cutAtJunctionCircles(path, fromVertex, toVertex);
+
         for (GraphEdge edge : graph.getEdges()) {
             if (sameEndpoints(edge, fromVertex, toVertex) && sameGeometry(edge.getPath(), path)) {
                 edge.addRoute(route);
@@ -202,6 +212,104 @@ public class GraphBuilder {
             }
         }
         graph.addEdge(new GraphEdge(fromVertex, toVertex, path, route));
+    }
+
+    /**
+     * Terminates the segment at its junction ends deterministically: the path
+     * is cut where it crosses the junction circle, then continues as a
+     * straight spoke to the junction coordinate. Route starts and finishes
+     * are not touched.
+     */
+    private List<Node> cutAtJunctionCircles(List<Node> path, GraphNode from, GraphNode to) {
+        List<Node> cut = path;
+        if (from.isJunction()) {
+            cut = cutAtStart(cut, from.getLocation());
+        }
+        if (to.isJunction()) {
+            cut = cutAtEnd(cut, to.getLocation());
+        }
+        return cut;
+    }
+
+    /**
+     * Start end of a path, cut at the junction circle: the junction
+     * coordinate, the circle crossing, then the course outside the circle.
+     * A path that never leaves the circle has no crossing and stays as it is.
+     */
+    private List<Node> cutAtStart(List<Node> path, Node junction) {
+        for (int i = 0; i < path.size(); i++) {
+            if (!insideJunctionCircle(path.get(i), junction)) {
+                Node inside = i == 0 ? junction : path.get(i - 1);
+                List<Node> cut = new ArrayList<>(path.size() - i + 2);
+                cut.add(junction);
+                cut.add(circleCrossing(junction, inside, path.get(i)));
+                cut.addAll(path.subList(i, path.size()));
+                return cut;
+            }
+        }
+        return path;
+    }
+
+    /** End end of a path, cut the same way as {@link #cutAtStart}. */
+    private List<Node> cutAtEnd(List<Node> path, Node junction) {
+        for (int i = path.size() - 1; i >= 0; i--) {
+            if (!insideJunctionCircle(path.get(i), junction)) {
+                Node inside = i == path.size() - 1 ? junction : path.get(i + 1);
+                List<Node> cut = new ArrayList<>(path.subList(0, i + 1));
+                cut.add(circleCrossing(junction, inside, path.get(i)));
+                cut.add(junction);
+                return cut;
+            }
+        }
+        return path;
+    }
+
+    private boolean insideJunctionCircle(Node point, Node junction) {
+        return point.distanceTo(junction) <= JUNCTION_CIRCLE_RADIUS_METERS;
+    }
+
+    /**
+     * The point where the stretch from {@code inside} toward {@code outside}
+     * leaves the junction circle. Bisection over the segment parameter keeps
+     * the result identical from build to build.
+     */
+    private Node circleCrossing(Node junction, Node inside, Node outside) {
+        double lo = 0;
+        double hi = 1;
+        for (int i = 0; i < 40; i++) {
+            double mid = (lo + hi) / 2;
+            if (insideJunctionCircle(lerp(inside, outside, mid), junction)) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        return lerp(inside, outside, (lo + hi) / 2);
+    }
+
+    private Node lerp(Node a, Node b, double t) {
+        return new Node(a.getLatitude() + t * (b.getLatitude() - a.getLatitude()),
+                a.getLongitude() + t * (b.getLongitude() - a.getLongitude()));
+    }
+
+    /**
+     * Fusing moves a vertex but leaves the edges' stored paths ending at the
+     * old point, so a rebuilt end is terminated at the junction it was folded
+     * into, the same way a freshly built segment end is.
+     */
+    private List<Node> terminateAtStart(List<Node> path, GraphNode junction) {
+        if (path.get(0).equals(junction.getLocation())) {
+            return path;
+        }
+        return cutAtStart(path, junction.getLocation());
+    }
+
+    /** End end of the path, terminated the same way as {@link #terminateAtStart}. */
+    private List<Node> terminateAtEnd(List<Node> path, GraphNode junction) {
+        if (path.get(path.size() - 1).equals(junction.getLocation())) {
+            return path;
+        }
+        return cutAtEnd(path, junction.getLocation());
     }
 
     private boolean sameEndpoints(GraphEdge edge, GraphNode from, GraphNode to) {
@@ -448,7 +556,14 @@ public class GraphBuilder {
                 // stub folded into the junction, shorter than GPS noise
                 continue;
             }
-            result.addEdge(newEdge(from, to, edge.getPath(), edge.getRoutes(), edge.getTraversals()));
+            List<Node> path = edge.getPath();
+            if (from != edge.getFrom()) {
+                path = terminateAtStart(path, from);
+            }
+            if (to != edge.getTo()) {
+                path = terminateAtEnd(path, to);
+            }
+            result.addEdge(newEdge(from, to, path, edge.getRoutes(), edge.getTraversals()));
         }
         extraEdges.forEach(result::addEdge);
         return result;

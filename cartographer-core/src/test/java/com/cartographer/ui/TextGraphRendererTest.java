@@ -1,6 +1,7 @@
 package com.cartographer.ui;
 
 import com.cartographer.map.GraphBuilder;
+import com.cartographer.map.GraphNode;
 import com.cartographer.map.IntersectionFinder;
 import com.cartographer.map.RouteGraph;
 import com.cartographer.model.Node;
@@ -46,6 +47,41 @@ class TextGraphRendererTest {
     }
 
     @Test
+    void vertexTableShowsTheCoordinateOfEveryVertex() {
+        Route a = route(new Node(48.0, 13.0), new Node(48.001, 13.0), new Node(48.002, 13.0));
+        Route b = route(new Node(48.001, 13.0), new Node(48.0005, 13.001));
+        RouteGraph graph = build(a, b);
+
+        String text = new TextGraphRenderer().render(graph);
+
+        List<String> rows = vertexRows(text);
+        List<GraphNode> vertices = TextGraphRenderer.ordered(graph.getNodes());
+        assertEquals(vertices.size(), rows.size(), () -> "vertex rows: " + rows);
+        for (int i = 0; i < vertices.size(); i++) {
+            String expected = coordinate(vertices.get(i));
+            String row = rows.get(i);
+            assertTrue(row.endsWith(expected),
+                    () -> "row " + row + " must end with the vertex coordinate " + expected);
+        }
+    }
+
+    @Test
+    void junctionRowShowsTheJunctionCoordinate() {
+        Route a = route(new Node(48.0, 13.0), new Node(48.001, 13.0), new Node(48.002, 13.0));
+        Route b = route(new Node(48.001, 13.0), new Node(48.0005, 13.001));
+        RouteGraph graph = build(a, b);
+
+        String text = new TextGraphRenderer().render(graph);
+
+        GraphNode junction = graph.getJunctions().get(0);
+        String row = vertexRows(text).stream()
+                .filter(r -> r.contains("*"))
+                .findFirst().orElseThrow(() -> new AssertionError("no junction row in: " + text));
+        assertTrue(row.contains(coordinate(junction)),
+                () -> "junction row " + row + " must show " + coordinate(junction));
+    }
+
+    @Test
     void labelSequenceRollsOverAfterZ() {
         assertEquals("A", TextGraphRenderer.label(0));
         assertEquals("Z", TextGraphRenderer.label(25));
@@ -56,6 +92,21 @@ class TextGraphRendererTest {
 
     private static String adjacency(String text) {
         return text.split("Adjacency")[1];
+    }
+
+    /** Rows of the vertex table, i.e. everything before the sections block. */
+    private static List<String> vertexRows(String text) {
+        return text.split("Sections")[0].lines()
+                .filter(line -> !line.isBlank())
+                .filter(line -> !line.startsWith("Vertices"))
+                .toList();
+    }
+
+    /** The coordinate as the renderer prints it. */
+    private static String coordinate(GraphNode vertex) {
+        return String.format("(%.6f, %.6f)",
+                vertex.getLocation().getLatitude(),
+                vertex.getLocation().getLongitude());
     }
 
     @Test
